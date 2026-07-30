@@ -122,7 +122,23 @@ class ZepEntityReader:
         """
         logger.info(f"获取图谱 {graph_id} 的所有节点...")
 
-        nodes = fetch_all_nodes(self.client, graph_id)
+        # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地图谱缓存读取（Zep 额度耗尽离线模式）
+        import os
+        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+            cached = self._read_graph_cache_data(graph_id)
+            if cached is not None:
+                logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(cached.get('nodes', []))} 个节点")
+                return cached.get('nodes', [])
+            logger.warning("GRAPH_LOCAL_ONLY 已开启但本地缓存不存在，回退尝试 Zep")
+
+        try:
+            nodes = fetch_all_nodes(self.client, graph_id)
+        except Exception as e:
+            cached = self._read_graph_cache_data(graph_id)
+            if cached is None:
+                raise
+            logger.warning(f"Zep 读取节点失败({e})，降级为本地缓存 ({len(cached.get('nodes', []))} 节点)")
+            return cached.get('nodes', [])
 
         nodes_data = []
         for node in nodes:
@@ -149,7 +165,23 @@ class ZepEntityReader:
         """
         logger.info(f"获取图谱 {graph_id} 的所有边...")
 
-        edges = fetch_all_edges(self.client, graph_id)
+        # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地图谱缓存读取
+        import os
+        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+            cached = self._read_graph_cache_data(graph_id)
+            if cached is not None:
+                logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(cached.get('edges', []))} 条边")
+                return cached.get('edges', [])
+            logger.warning("GRAPH_LOCAL_ONLY 已开启但本地缓存不存在，回退尝试 Zep")
+
+        try:
+            edges = fetch_all_edges(self.client, graph_id)
+        except Exception as e:
+            cached = self._read_graph_cache_data(graph_id)
+            if cached is None:
+                raise
+            logger.warning(f"Zep 读取边失败({e})，降级为本地缓存 ({len(cached.get('edges', []))} 边)")
+            return cached.get('edges', [])
 
         edges_data = []
         for edge in edges:
@@ -165,6 +197,51 @@ class ZepEntityReader:
         logger.info(f"共获取 {len(edges_data)} 条边")
         return edges_data
     
+    # ===== 本地补丁：Agent 实体质量过滤 + Zep 离线降级 =====
+    _GENERIC_NAME_DENYLIST = {
+        '公司', '本公司', '发行人', '发行人子公司', '子公司', '集团', '公司集团',
+        'company', 'the company', 'issuer', '目标公司', '标的', '标的公司',
+        '关联方', '控股股东', '实际控制人', '实控人', '管理层', '员工',
+        '承诺人', '本人', '董事会', '监事会', '股东大会',
+    }
+
+    @staticmethod
+    def _read_graph_cache_data(graph_id: str):
+        """读取本地图谱缓存（uploads/graphs/<id>.json），返回 data 字段或 None"""
+        try:
+            from .graph_builder import GraphBuilderService
+            return GraphBuilderService.read_graph_cache(graph_id)
+        except Exception:
+            return None
+
+    @classmethod
+    def _is_generic_name(cls, name) -> bool:
+        import re
+        n = (name or '').strip().lower()
+        if not n or len(n) <= 1:
+            return True
+        if n in cls._GENERIC_NAME_DENYLIST:
+            return True
+        if re.fullmatch(r'公司[a-z]', n):   # 公司A / 公司B 等占位符
+            return True
+        if re.fullmatch(r'[\d\W]+', n):    # 纯数字/符号
+            return True
+        return False
+
+    def _get_degree_map(self, graph_id: str, all_edges=None):
+        """节点度数表。优先用传入的边；否则读本地图谱缓存；都没有返回 None（跳过度数过滤）"""
+        edges = all_edges
+        if edges is None:
+            edges = self._read_graph_cache_data(graph_id)
+            edges = edges.get('edges') if edges else None
+        if edges is None:
+            return None
+        deg = {}
+        for e in edges:
+            deg[e['source_node_uuid']] = deg.get(e['source_node_uuid'], 0) + 1
+            deg[e['target_node_uuid']] = deg.get(e['target_node_uuid'], 0) + 1
+        return deg
+
     def get_node_edges(
         self,
         node_uuid: str,
@@ -251,8 +328,20 @@ class ZepEntityReader:
         # 构建节点UUID到节点数据的映射
         node_map = {n["uuid"]: n for n in all_nodes}
         
-        # 筛选符合条件的实体
-        filtered_entities = []
+        # ===== 本地补丁：质量过滤参数（env 可调）=====
+        import os
+        try:
+            min_degree = max(0, int(os.environ.get('AGENT_MIN_DEGREE', '3')))
+        except ValueError:
+            min_degree = 3
+        try:
+            max_entities = int(os.environ.get('AGENT_MAX_ENTITIES', '150'))
+        except ValueError:
+            max_entities = 150
+        extra_deny = {x.strip().lower() for x in os.environ.get('AGENT_EXCLUDE_NAMES', '').split(',') if x.strip()}
+        
+        # ===== 第一遍：类型过滤，收集候选节点 =====
+        candidates = []  # [(node, entity_type)]
         entity_types_found = set()
         
         for node in all_nodes:
@@ -275,12 +364,43 @@ class ZepEntityReader:
                 entity_type = custom_labels[0]
             
             entity_types_found.add(entity_type)
-            
+            candidates.append((node, entity_type))
+        
+        # ===== 第二遍：质量过滤（通用名黑名单 → 度数阈值 → 按度数排序截断）=====
+        quality_before = len(candidates)
+        candidates = [
+            (n, t) for n, t in candidates
+            if not self._is_generic_name(n.get('name'))
+            and (n.get('name') or '').strip().lower() not in extra_deny
+        ]
+        deny_removed = quality_before - len(candidates)
+        
+        deg_map = self._get_degree_map(graph_id, all_edges if enrich_with_edges else None)
+        degree_note = "度数数据不可用，跳过度数过滤"
+        if deg_map is not None:
+            before = len(candidates)
+            if min_degree > 0:
+                candidates = [(n, t) for n, t in candidates if deg_map.get(n["uuid"], 0) >= min_degree]
+            candidates.sort(key=lambda nt: -deg_map.get(nt[0]["uuid"], 0))
+            degree_note = f"度>={min_degree} 过滤 {before} -> {len(candidates)}"
+        if max_entities > 0 and len(candidates) > max_entities:
+            candidates = candidates[:max_entities]
+        # 类型集合按最终幸存者重算
+        entity_types_found = {t for _, t in candidates}
+        logger.info(
+            f"质量过滤: 黑名单剔除 {deny_removed}, {degree_note}, "
+            f"上限 {max_entities}, 最终 {len(candidates)}"
+        )
+        
+        # ===== 第三遍：为幸存者构建 EntityNode 并补充边信息 =====
+        filtered_entities = []
+        
+        for node, entity_type in candidates:
             # 创建实体节点对象
             entity = EntityNode(
                 uuid=node["uuid"],
                 name=node["name"],
-                labels=labels,
+                labels=node.get("labels", []),
                 summary=node["summary"],
                 attributes=node["attributes"],
             )

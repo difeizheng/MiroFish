@@ -889,7 +889,9 @@ def get_graph_data(graph_id: str):
             }), 500
         
         builder = GraphBuilderService(api_key=Config.ZEP_API_KEY)
-        graph_data = builder.get_graph_data(graph_id)
+        # 本地补丁：?refresh=1 强制忽略缓存重新拉取
+        force_refresh = request.args.get('refresh', '').lower() in ('1', 'true', 'yes')
+        graph_data = builder.get_graph_data(graph_id, force_refresh=force_refresh)
         
         return jsonify({
             "success": True,

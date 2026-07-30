@@ -4,6 +4,7 @@
 """
 
 import hashlib
+import os
 import uuid
 import time
 import threading
@@ -797,16 +798,105 @@ class GraphBuilderService:
             entity_types=list(entity_types)
         )
     
-    def get_graph_data(self, graph_id: str) -> Dict[str, Any]:
+    # ===== 本地补丁：图谱数据本地缓存 =====
+    # 全量拉取需从 Zep 翻数百页（数分钟），页面每次打开都拉不现实。
+    # 缓存到 uploads/graphs/<graph_id>.json（uploads 是 volume，容器重建不丢）。
+    _GRAPH_CACHE_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'uploads', 'graphs'
+    )
+    _graph_cache_locks: Dict[str, threading.Lock] = {}
+    _graph_cache_locks_guard = threading.Lock()
+
+    @classmethod
+    def _cache_path(cls, graph_id: str) -> str:
+        return os.path.join(cls._GRAPH_CACHE_DIR, f"{graph_id}.json")
+
+    @classmethod
+    def _get_graph_lock(cls, graph_id: str) -> threading.Lock:
+        with cls._graph_cache_locks_guard:
+            if graph_id not in cls._graph_cache_locks:
+                cls._graph_cache_locks[graph_id] = threading.Lock()
+            return cls._graph_cache_locks[graph_id]
+
+    @classmethod
+    def read_graph_cache(cls, graph_id: str) -> Optional[Dict[str, Any]]:
+        import json
+        path = cls._cache_path(graph_id)
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            return payload.get("data")
+        except Exception:
+            return None
+
+    @classmethod
+    def write_graph_cache(cls, graph_id: str, data: Dict[str, Any]):
+        import json
+        try:
+            os.makedirs(cls._GRAPH_CACHE_DIR, exist_ok=True)
+            payload = {"cached_at": time.time(), "graph_id": graph_id, "data": data}
+            tmp_path = cls._cache_path(graph_id) + ".tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False)
+            os.replace(tmp_path, cls._cache_path(graph_id))
+        except Exception:
+            pass  # 缓存写入失败不影响主流程
+
+    @classmethod
+    def invalidate_graph_cache(cls, graph_id: str):
+        try:
+            path = cls._cache_path(graph_id)
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+    def get_graph_data(self, graph_id: str, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        获取完整图谱数据（包含详细信息）
-        
+        获取完整图谱数据（带本地缓存）
+
         Args:
             graph_id: 图谱ID
-            
+            force_refresh: True 时忽略缓存，强制从 Zep 重新拉取并更新缓存
+
         Returns:
             包含nodes和edges的字典，包括时间信息、属性等详细数据
         """
+        import os as _os
+        local_only = _os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+        if not force_refresh:
+            cached = self.read_graph_cache(graph_id)
+            if cached is not None:
+                return cached
+
+        # 同一 graph_id 串行拉取，避免前端轮询造成并发重复全量拉取
+        lock = self._get_graph_lock(graph_id)
+        with lock:
+            if not force_refresh:
+                # 双重检查：等锁期间可能已有线程完成拉取
+                cached = self.read_graph_cache(graph_id)
+                if cached is not None:
+                    return cached
+            if local_only:
+                # GRAPH_LOCAL_ONLY 下缓存缺失：不硬拉 Zep（额度已尽），报错由上层处理
+                raise RuntimeError(
+                    f"GRAPH_LOCAL_ONLY 已开启但图谱 {graph_id} 无本地缓存，无法从 Zep 拉取"
+                )
+            try:
+                data = self._fetch_graph_data_from_zep(graph_id)
+            except Exception:
+                # Zep 故障/额度耗尽时降级为陈旧缓存（如有），保证页面可读
+                stale = self.read_graph_cache(graph_id)
+                if stale is not None:
+                    return stale
+                raise
+            self.write_graph_cache(graph_id, data)
+            return data
+
+    def _fetch_graph_data_from_zep(self, graph_id: str) -> Dict[str, Any]:
+        """从 Zep 全量拉取图谱数据（慢，数百次分页请求）"""
         nodes = fetch_all_nodes(self.client, graph_id)
         edges = fetch_all_edges(self.client, graph_id)
 
@@ -875,5 +965,9 @@ class GraphBuilderService:
         }
     
     def delete_graph(self, graph_id: str):
-        """删除图谱"""
-        self.client.graph.delete(graph_id=graph_id)
+        """删除图谱（同时清理本地缓存）"""
+        try:
+            self.client.graph.delete(graph_id=graph_id)
+        finally:
+            # Zep 不可用（GRAPH_LOCAL_ONLY/额度耗尽）时也要能删掉本地缓存
+            self.invalidate_graph_cache(graph_id)

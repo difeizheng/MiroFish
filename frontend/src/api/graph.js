@@ -46,10 +46,12 @@ export function getTaskStatus(taskId) {
  * @param {String} graphId - 图谱ID
  * @returns {Promise}
  */
-export function getGraphData(graphId) {
+export function getGraphData(graphId, forceRefresh = false) {
   return service({
     url: `/api/graph/data/${graphId}`,
-    method: 'get'
+    method: 'get',
+    // 本地补丁：forceRefresh 时后端忽略缓存强制重拉
+    params: forceRefresh ? { refresh: 1 } : {}
   })
 }
 

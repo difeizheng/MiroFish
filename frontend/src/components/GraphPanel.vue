@@ -13,7 +13,48 @@
         </button>
       </div>
     </div>
-    
+
+    <!-- 本地补丁：大图浏览工具栏：搜索 / 核心节点数 / 收起扩展 / 统计 -->
+    <div v-if="graphData" class="graph-toolbar">
+      <div class="toolbar-search">
+        <input
+          v-model="searchQuery"
+          class="search-input"
+          type="text"
+          placeholder="🔍 搜索实体名，回车定位..."
+          @keyup.enter="searchResults.length && focusNode(searchResults[0])"
+        />
+        <div v-if="searchQuery" class="search-dropdown">
+          <div
+            v-for="r in searchResults" :key="r.uuid"
+            class="search-item"
+            @click="focusNode(r)"
+          >
+            <span class="search-item-name">{{ r.name }}</span>
+            <span class="search-item-type">{{ r.labels?.find(l => l !== 'Entity') || 'Entity' }}</span>
+          </div>
+          <div v-if="!searchResults.length" class="search-item empty">无匹配实体</div>
+        </div>
+      </div>
+      <div class="topn-selector">
+        <span class="topn-label">核心节点</span>
+        <button
+          v-for="n in [50, 100, 150, 200, 300, 500]" :key="n"
+          class="topn-btn" :class="{ active: topN === n }"
+          @click="topN = n"
+        >{{ n }}</button>
+      </div>
+      <button
+        v-if="expandedNodeIds.size"
+        class="tool-btn reset-btn"
+        @click="resetExpansion"
+        title="清除双击/搜索展开的节点，回到核心骨架"
+      >收起扩展 ({{ expandedNodeIds.size }})</button>
+      <span class="toolbar-stats">
+        显示 {{ visibleGraph.nodes.length }}/{{ graphData.node_count || (graphData.nodes || []).length }} 节点 · {{ visibleGraph.edges.length }} 边
+      </span>
+    </div>
+
     <div class="graph-container" ref="graphContainer">
       <!-- 图谱可视化 -->
       <div v-if="graphData" class="graph-view">
@@ -217,9 +258,15 @@
     <div v-if="graphData && entityTypes.length" class="graph-legend">
       <span class="legend-title">Entity Types</span>
       <div class="legend-items">
-        <div class="legend-item" v-for="type in entityTypes" :key="type.name">
+        <div
+          class="legend-item clickable"
+          v-for="type in entityTypes" :key="type.name"
+          :class="{ disabled: hiddenTypes.has(type.name) }"
+          @click="toggleType(type.name)"
+          :title="hiddenTypes.has(type.name) ? '点击显示该类型' : '点击隐藏该类型'"
+        >
           <span class="legend-dot" :style="{ background: type.color }"></span>
-          <span class="legend-label">{{ type.name }}</span>
+          <span class="legend-label">{{ type.name }} ({{ type.count }})</span>
         </div>
       </div>
     </div>
@@ -255,6 +302,107 @@ const showEdgeLabels = ref(true) // 默认显示边标签
 const expandedSelfLoops = ref(new Set()) // 展开的自环项
 const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
+
+// ===== 本地补丁：大图浏览控制（渐进式探索：核心骨架 + 局部展开）=====
+const topN = ref(150)                  // 核心骨架节点数（按度数 Top-N）
+const searchQuery = ref('')            // 搜索关键词
+const hiddenTypes = ref(new Set())     // 被图例过滤隐藏的实体类型
+const expandedNodeIds = ref(new Set()) // 双击/搜索展开的节点（含一跳邻居）
+const currentZoom = ref(1)             // 当前缩放级别（边标签联动显隐）
+
+// 全图节点度数统计
+const degreeMap = computed(() => {
+  const deg = {}
+  const edgesData = props.graphData?.edges || []
+  edgesData.forEach(e => {
+    deg[e.source_node_uuid] = (deg[e.source_node_uuid] || 0) + 1
+    deg[e.target_node_uuid] = (deg[e.target_node_uuid] || 0) + 1
+  })
+  return deg
+})
+
+// 可见子图 = Top-N 核心骨架 + 手动展开节点的邻居 - 隐藏类型
+const visibleGraph = computed(() => {
+  const nodesData = props.graphData?.nodes || []
+  const edgesData = props.graphData?.edges || []
+  if (!nodesData.length) return { nodes: [], edges: [] }
+  const deg = degreeMap.value
+
+  // 1. 度数 Top-N 作为核心骨架
+  const sorted = [...nodesData].sort((a, b) => (deg[b.uuid] || 0) - (deg[a.uuid] || 0))
+  const visibleIds = new Set(sorted.slice(0, topN.value).map(n => n.uuid))
+
+  // 2. 手动展开的节点及其一跳邻居
+  expandedNodeIds.value.forEach(id => {
+    visibleIds.add(id)
+    edgesData.forEach(e => {
+      if (e.source_node_uuid === id) visibleIds.add(e.target_node_uuid)
+      if (e.target_node_uuid === id) visibleIds.add(e.source_node_uuid)
+    })
+  })
+
+  // 3. 实体类型过滤
+  const nodes = nodesData.filter(n => {
+    if (!visibleIds.has(n.uuid)) return false
+    const type = n.labels?.find(l => l !== 'Entity') || 'Entity'
+    return !hiddenTypes.value.has(type)
+  })
+  const nodeIdSet = new Set(nodes.map(n => n.uuid))
+  const edges = edgesData.filter(e => nodeIdSet.has(e.source_node_uuid) && nodeIdSet.has(e.target_node_uuid))
+  return { nodes, edges }
+})
+
+// 搜索结果（全图模糊匹配，最多 8 条）
+const searchResults = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q || !props.graphData?.nodes) return []
+  return props.graphData.nodes
+    .filter(n => (n.name || '').toLowerCase().includes(q))
+    .slice(0, 8)
+})
+
+// 切换实体类型显隐
+const toggleType = (name) => {
+  const s = new Set(hiddenTypes.value)
+  if (s.has(name)) { s.delete(name) } else { s.add(name) }
+  hiddenTypes.value = s
+}
+
+// 搜索定位：展开该节点邻居、解除其类型过滤，渲染后居中
+const focusNode = (n) => {
+  const type = n.labels?.find(l => l !== 'Entity') || 'Entity'
+  if (hiddenTypes.value.has(type)) {
+    const h = new Set(hiddenTypes.value)
+    h.delete(type)
+    hiddenTypes.value = h
+  }
+  const s = new Set(expandedNodeIds.value)
+  s.add(n.uuid)
+  expandedNodeIds.value = s
+  searchQuery.value = ''
+  pendingFocusId = n.uuid
+}
+
+// 收起所有手动展开的节点，回到核心骨架
+const resetExpansion = () => {
+  expandedNodeIds.value = new Set()
+}
+
+// 将视图平滑居中到指定节点
+const centerOnNode = (id) => {
+  const n = currentNodes.find(x => x.id === id)
+  if (!n || !svgSelection || !zoomBehavior || !graphContainer.value) return
+  const width = graphContainer.value.clientWidth
+  const height = graphContainer.value.clientHeight
+  const k = 1.2
+  svgSelection.transition().duration(600).call(
+    zoomBehavior.transform,
+    d3.zoomIdentity.translate(width / 2 - n.x * k, height / 2 - n.y * k).scale(k)
+  )
+}
+
+// 渲染时边标签初始显隐：只有用户真正放大（>=1.6x）或边很少时才显示
+const labelsInitiallyVisible = (edgeCount) => showEdgeLabels.value && (currentZoom.value >= 1.6 || edgeCount <= 100)
 
 // 关闭模拟结束提示
 const dismissFinishedHint = () => {
@@ -324,6 +472,12 @@ const closeDetailPanel = () => {
 let currentSimulation = null
 let linkLabelsRef = null
 let linkLabelBgRef = null
+let zoomBehavior = null
+let svgSelection = null
+let nodeSelection = null
+let currentNodes = []
+let currentEdgeCount = 0
+let pendingFocusId = null
 
 const renderGraph = () => {
   if (!graphSvg.value || !props.graphData) return
@@ -344,8 +498,9 @@ const renderGraph = () => {
     
   svg.selectAll('*').remove()
   
-  const nodesData = props.graphData.nodes || []
-  const edgesData = props.graphData.edges || []
+  // 本地补丁：只渲染可见子图（核心骨架 + 展开部分），而非全图，避免大图卡死
+  const nodesData = visibleGraph.value.nodes
+  const edgesData = visibleGraph.value.edges
   
   if (nodesData.length === 0) return
 
@@ -489,9 +644,15 @@ const renderGraph = () => {
   const g = svg.append('g')
   
   // Zoom
-  svg.call(d3.zoom().extent([[0, 0], [width, height]]).scaleExtent([0.1, 4]).on('zoom', (event) => {
+  zoomBehavior = d3.zoom().extent([[0, 0], [width, height]]).scaleExtent([0.1, 4]).on('zoom', (event) => {
     g.attr('transform', event.transform)
-  }))
+    // 本地补丁：缩放级别联动边标签显隐
+    currentZoom.value = event.transform.k
+    updateEdgeLabelVisibility()
+  })
+  svg.call(zoomBehavior)
+  svg.on('dblclick.zoom', null) // 双击留给"展开邻居"，不触发缩放
+  svgSelection = svg
 
   // Links - 使用 path 支持曲线
   const linkGroup = g.append('g').attr('class', 'links')
@@ -599,7 +760,7 @@ const renderGraph = () => {
     .attr('ry', 3)
     .style('cursor', 'pointer')
     .style('pointer-events', 'all')
-    .style('display', showEdgeLabels.value ? 'block' : 'none')
+    .style('display', labelsInitiallyVisible(edges.length) ? 'block' : 'none')
     .on('click', (event, d) => {
       event.stopPropagation()
       linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
@@ -627,7 +788,7 @@ const renderGraph = () => {
     .style('cursor', 'pointer')
     .style('pointer-events', 'all')
     .style('font-family', 'system-ui, sans-serif')
-    .style('display', showEdgeLabels.value ? 'block' : 'none')
+    .style('display', labelsInitiallyVisible(edges.length) ? 'block' : 'none')
     .on('click', (event, d) => {
       event.stopPropagation()
       linkGroup.selectAll('path').attr('stroke', '#C0C0C0').attr('stroke-width', 1.5)
@@ -654,7 +815,8 @@ const renderGraph = () => {
   const node = nodeGroup.selectAll('circle')
     .data(nodes)
     .enter().append('circle')
-    .attr('r', 10)
+    // 本地补丁：节点半径按度数缩放，枢纽节点一眼可辨
+    .attr('r', d => 6 + Math.min(16, Math.sqrt(degreeMap.value[d.id] || 1) * 1.6))
     .attr('fill', d => getColor(d.type))
     .attr('stroke', '#fff')
     .attr('stroke-width', 2.5)
@@ -713,6 +875,14 @@ const renderGraph = () => {
         entityType: d.type,
         color: getColor(d.type)
       }
+    })
+    .on('dblclick', (event, d) => {
+      // 本地补丁：双击展开/收起该节点的一跳邻居
+      event.stopPropagation()
+      event.preventDefault()
+      const s = new Set(expandedNodeIds.value)
+      if (s.has(d.id)) { s.delete(d.id) } else { s.add(d.id) }
+      expandedNodeIds.value = s
     })
     .on('mouseenter', (event, d) => {
       if (!selectedItem.value || selectedItem.value.data?.uuid !== d.rawData.uuid) {
@@ -773,6 +943,24 @@ const renderGraph = () => {
       .attr('y', d => d.y)
   })
   
+  node.append('title').text(d => `${d.name}（双击展开/收起邻居）`)
+  
+  nodeSelection = node
+  currentNodes = nodes
+  currentEdgeCount = edges.length
+  
+  // 本地补丁：搜索定位后的居中与高亮（等布局稳定后执行）
+  if (pendingFocusId) {
+    const focusId = pendingFocusId
+    pendingFocusId = null
+    setTimeout(() => {
+      centerOnNode(focusId)
+      node.filter(d => d.id === focusId)
+        .attr('stroke', '#E91E63')
+        .attr('stroke-width', 4)
+    }, 900)
+  }
+  
   // 点击空白处关闭详情面板
   svg.on('click', () => {
     selectedItem.value = null
@@ -783,19 +971,19 @@ const renderGraph = () => {
   })
 }
 
-watch(() => props.graphData, () => {
+// 本地补丁：数据或浏览控制状态变化时重渲染
+watch([() => props.graphData, topN, hiddenTypes, expandedNodeIds], () => {
   nextTick(renderGraph)
 }, { deep: true })
 
-// 监听边标签显示开关
-watch(showEdgeLabels, (newVal) => {
-  if (linkLabelsRef) {
-    linkLabelsRef.style('display', newVal ? 'block' : 'none')
-  }
-  if (linkLabelBgRef) {
-    linkLabelBgRef.style('display', newVal ? 'block' : 'none')
-  }
-})
+// 本地补丁：边标签显隐：手动开关 + 缩放/边数联动（边多且缩小时自动隐藏，放大后显示）
+const updateEdgeLabelVisibility = () => {
+  const visible = showEdgeLabels.value && (currentZoom.value >= 1.6 || currentEdgeCount <= 100)
+  const display = visible ? 'block' : 'none'
+  if (linkLabelsRef) linkLabelsRef.style('display', display)
+  if (linkLabelBgRef) linkLabelBgRef.style('display', display)
+}
+watch(showEdgeLabels, updateEdgeLabelVisibility)
 
 const handleResize = () => {
   nextTick(renderGraph)
@@ -1419,5 +1607,165 @@ input:checked + .slider:before {
 .episode-tag.small {
   padding: 3px 6px;
   font-size: 9px;
+}
+
+/* ===== 本地补丁：大图浏览工具栏 ===== */
+.graph-toolbar {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.95);
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid #EAEAEA;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.06);
+  max-width: calc(100% - 40px);
+  flex-wrap: wrap;
+}
+
+.toolbar-search {
+  position: relative;
+}
+
+.search-input {
+  width: 210px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #E0E0E0;
+  border-radius: 6px;
+  font-size: 12px;
+  outline: none;
+}
+
+.search-input:focus {
+  border-color: #7B2D8E;
+}
+
+.search-dropdown {
+  position: absolute;
+  top: 36px;
+  left: 0;
+  width: 280px;
+  background: #FFF;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 30;
+}
+
+.search-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.search-item:hover {
+  background: #F5F0F7;
+}
+
+.search-item.empty {
+  color: #999;
+  cursor: default;
+}
+
+.search-item-name {
+  color: #333;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-item-type {
+  color: #999;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.topn-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.topn-label {
+  font-size: 11px;
+  color: #888;
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.topn-btn {
+  height: 26px;
+  min-width: 36px;
+  padding: 0 8px;
+  border: 1px solid #E0E0E0;
+  background: #FFF;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #666;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.topn-btn:hover {
+  border-color: #7B2D8E;
+  color: #7B2D8E;
+}
+
+.topn-btn.active {
+  background: #7B2D8E;
+  border-color: #7B2D8E;
+  color: #FFF;
+}
+
+.reset-btn {
+  height: 28px;
+  font-size: 11px;
+  color: #C5283D;
+  border-color: #F0D0D5;
+}
+
+.reset-btn:hover {
+  background: #FDF2F4;
+  border-color: #C5283D;
+}
+
+.toolbar-stats {
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+}
+
+/* 图例可点击过滤 */
+.legend-item.clickable {
+  cursor: pointer;
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+  user-select: none;
+}
+
+.legend-item.clickable:hover {
+  background: #F0F0F0;
+}
+
+.legend-item.disabled {
+  opacity: 0.35;
+}
+
+.legend-item.disabled .legend-label {
+  text-decoration: line-through;
 }
 </style>

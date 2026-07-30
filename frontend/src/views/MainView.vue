@@ -368,11 +368,11 @@ const pollTaskStatus = async (taskId) => {
   }
 }
 
-const loadGraph = async (graphId) => {
+const loadGraph = async (graphId, forceRefresh = false) => {
   graphLoading.value = true
   addLog(`Loading full graph data: ${graphId}`)
   try {
-    const res = await getGraphData(graphId)
+    const res = await getGraphData(graphId, forceRefresh)
     if (res.success) {
       graphData.value = res.data
       addLog('Graph data loaded successfully.')
@@ -388,8 +388,9 @@ const loadGraph = async (graphId) => {
 
 const refreshGraph = () => {
   if (projectData.value?.graph_id) {
-    addLog('Manual graph refresh triggered.')
-    loadGraph(projectData.value.graph_id)
+    // 本地补丁：手动刷新强制忽略后端缓存重新拉取
+    addLog('Manual graph refresh triggered (force re-fetch from Zep).')
+    loadGraph(projectData.value.graph_id, true)
   }
 }
 

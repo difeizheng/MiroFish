@@ -490,6 +490,12 @@ class ZepGraphMemoryUpdater:
         for payload_activities, combined_text in self._build_episode_payloads(activities):
             if deadline is not None and time.time() >= deadline:
                 raise _DrainDeadlineExceeded(processed_count)
+            # 本地补丁：GRAPH_LOCAL_ONLY 时跳过 Zep，直接写本地 JSONL（Zep 额度耗尽离线模式）
+            import os
+            if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+                self._write_local_memory(combined_text, platform, len(payload_activities))
+                processed_count += len(payload_activities)
+                continue
             try:
                 episode = self.client.graph.add(
                     graph_id=self.graph_id,
@@ -540,12 +546,33 @@ class ZepGraphMemoryUpdater:
                     "activities": payload_activities,
                     "error": str(e),
                 })
+                # 本地补丁：失败批次同时落盘本地 JSONL，记忆不丢失
+                self._write_local_memory(combined_text, platform, len(payload_activities))
             finally:
                 # Successes have a confirmed episode UUID; failures are kept
                 # durably in _failed_batches and must never be replayed. Either
                 # way this payload is accounted for before moving on.
                 processed_count += len(payload_activities)
         return processed_count
+
+    def _write_local_memory(self, combined_text: str, platform: str, item_count: int):
+        """本地补丁：将活动批次写入本地 JSONL（uploads/graphs/<graph_id>.memory.jsonl）"""
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            cache_dir = _Path(__file__).resolve().parents[2] / 'uploads' / 'graphs'
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            fp = cache_dir / f"{self.graph_id}.memory.jsonl"
+            with fp.open('a', encoding='utf-8') as f:
+                f.write(_json.dumps({
+                    'timestamp': datetime.now().isoformat(),
+                    'platform': platform,
+                    'item_count': item_count,
+                    'text': combined_text,
+                }, ensure_ascii=False) + '\n')
+            logger.info(f"已写入本地记忆文件: {fp.name} ({item_count} 条活动)")
+        except Exception as e:
+            logger.error(f"写入本地记忆文件失败: {e}")
 
     @staticmethod
     def _to_rfc3339(value: str) -> str:

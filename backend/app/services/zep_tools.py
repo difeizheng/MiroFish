@@ -29,6 +29,28 @@ from ..utils.zep import (
 logger = get_logger('mirofish.zep_tools')
 
 
+# ===== 本地补丁：Zep 额度耗尽时的本地缓存降级 =====
+def _graph_local_only() -> bool:
+    import os
+    return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+
+
+def _load_graph_cache(graph_id: str):
+    """读取本地图谱缓存（uploads/graphs/<id>.json），返回 data 字段或 None"""
+    try:
+        from .graph_builder import GraphBuilderService
+        return GraphBuilderService.read_graph_cache(graph_id)
+    except Exception:
+        return None
+
+
+def _norm_temporal(v):
+    """缓存里的时间字段可能是字符串 'None'，归一化"""
+    if v in (None, 'None', '', 'null'):
+        return None
+    return v
+
+
 @dataclass
 class SearchResult:
     """搜索结果"""
@@ -478,6 +500,11 @@ class ZepToolsService:
         """
         logger.info(t("console.graphSearch", graphId=graph_id, query=query[:50]))
         
+        # 本地补丁：GRAPH_LOCAL_ONLY 时跳过 Zep 搜索 API，直接本地关键词搜索
+        if _graph_local_only():
+            logger.info("GRAPH_LOCAL_ONLY: 使用本地关键词搜索")
+            return self._local_search(graph_id, query, limit, scope)
+        
         zep_query = normalize_zep_search_query(query)
         zep_limit = normalize_zep_search_limit(limit)
 
@@ -655,7 +682,32 @@ class ZepToolsService:
         """
         logger.info(t("console.fetchingAllNodes", graphId=graph_id))
 
-        nodes = fetch_all_nodes(self.client, graph_id)
+        # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地缓存读取
+        if _graph_local_only():
+            cached = _load_graph_cache(graph_id)
+            if cached is not None:
+                nodes_c = cached.get('nodes', [])
+                logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(nodes_c)} 个节点")
+                return [NodeInfo(
+                    uuid=n.get('uuid', ''), name=n.get('name', ''),
+                    labels=n.get('labels', []), summary=n.get('summary', ''),
+                    attributes=n.get('attributes', {}) or {}
+                ) for n in nodes_c]
+            logger.warning("GRAPH_LOCAL_ONLY 已开启但本地缓存不存在，回退尝试 Zep")
+
+        try:
+            nodes = fetch_all_nodes(self.client, graph_id)
+        except Exception as e:
+            cached = _load_graph_cache(graph_id)
+            if cached is None:
+                raise
+            nodes_c = cached.get('nodes', [])
+            logger.warning(f"Zep 读取节点失败({e})，降级为本地缓存 ({len(nodes_c)} 节点)")
+            return [NodeInfo(
+                uuid=n.get('uuid', ''), name=n.get('name', ''),
+                labels=n.get('labels', []), summary=n.get('summary', ''),
+                attributes=n.get('attributes', {}) or {}
+            ) for n in nodes_c]
 
         result = []
         for node in nodes:
@@ -684,7 +736,52 @@ class ZepToolsService:
         """
         logger.info(t("console.fetchingAllEdges", graphId=graph_id))
 
-        edges = fetch_all_edges(self.client, graph_id)
+        # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地缓存读取
+        if _graph_local_only():
+            cached = _load_graph_cache(graph_id)
+            if cached is not None:
+                edges_c = cached.get('edges', [])
+                logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(edges_c)} 条边")
+                out = []
+                for e in edges_c:
+                    info = EdgeInfo(
+                        uuid=e.get('uuid', ''), name=e.get('name', ''),
+                        fact=e.get('fact', ''),
+                        source_node_uuid=e.get('source_node_uuid', ''),
+                        target_node_uuid=e.get('target_node_uuid', '')
+                    )
+                    if include_temporal:
+                        info.created_at = _norm_temporal(e.get('created_at'))
+                        info.valid_at = _norm_temporal(e.get('valid_at'))
+                        info.invalid_at = _norm_temporal(e.get('invalid_at'))
+                        info.expired_at = _norm_temporal(e.get('expired_at'))
+                    out.append(info)
+                return out
+            logger.warning("GRAPH_LOCAL_ONLY 已开启但本地缓存不存在，回退尝试 Zep")
+
+        try:
+            edges = fetch_all_edges(self.client, graph_id)
+        except Exception as e:
+            cached = _load_graph_cache(graph_id)
+            if cached is None:
+                raise
+            edges_c = cached.get('edges', [])
+            logger.warning(f"Zep 读取边失败({e})，降级为本地缓存 ({len(edges_c)} 边)")
+            out = []
+            for e in edges_c:
+                info = EdgeInfo(
+                    uuid=e.get('uuid', ''), name=e.get('name', ''),
+                    fact=e.get('fact', ''),
+                    source_node_uuid=e.get('source_node_uuid', ''),
+                    target_node_uuid=e.get('target_node_uuid', '')
+                )
+                if include_temporal:
+                    info.created_at = _norm_temporal(e.get('created_at'))
+                    info.valid_at = _norm_temporal(e.get('valid_at'))
+                    info.invalid_at = _norm_temporal(e.get('invalid_at'))
+                    info.expired_at = _norm_temporal(e.get('expired_at'))
+                out.append(info)
+            return out
 
         result = []
         for edge in edges:
@@ -720,6 +817,36 @@ class ZepToolsService:
             节点信息或None
         """
         logger.info(t("console.fetchingNodeDetail", uuid=node_uuid[:8]))
+        
+        # 本地补丁：GRAPH_LOCAL_ONLY 时扫描本地缓存目录查节点（get_node_detail 无 graph_id 上下文）
+        def _from_cache():
+            import os as _os, glob as _glob
+            cache_dir = _os.path.join(
+                _os.path.dirname(_os.path.abspath(__file__)), '..', '..', 'uploads', 'graphs'
+            )
+            for path in _glob.glob(_os.path.join(cache_dir, '*.json')):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        payload = json.load(f)
+                    cached = (payload or {}).get('data')
+                except Exception:
+                    continue
+                if not cached:
+                    continue
+                for n in cached.get('nodes', []):
+                    if n.get('uuid') == node_uuid:
+                        return NodeInfo(
+                            uuid=n.get('uuid', ''), name=n.get('name', ''),
+                            labels=n.get('labels', []), summary=n.get('summary', ''),
+                            attributes=n.get('attributes', {}) or {}
+                        )
+            return None
+        
+        if _graph_local_only():
+            hit = _from_cache()
+            if hit is not None:
+                return hit
+            logger.warning("GRAPH_LOCAL_ONLY: 缓存中未找到该节点，回退尝试 Zep")
         
         try:
             node = self._call_with_retry(

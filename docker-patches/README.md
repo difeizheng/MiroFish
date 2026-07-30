@@ -1,4 +1,8 @@
-# docker-patches — 镜像热修复补丁
+# docker-patches — 镜像热修复补丁（历史留档）
+
+> **状态：已归档（2026-07）**。所有补丁已回填本地源码并打入自建镜像 `mirofish:local`，
+> docker-compose.yml 的单文件挂载已全部移除，本目录仅作历史参考，不再生效。
+> 唯一例外：分页修复补丁已彻底过时（上游 zep-cloud 3.25 + 新 zep_paging.py 游标分页已修复）。
 
 官方镜像 `ghcr.nju.edu.cn/666ghj/mirofish:latest` 落后于本地源码，且镜像内 zep-cloud 为 3.13（本地源码锁定 3.25）。
 这些补丁通过 docker-compose.yml 的**单文件只读挂载**注入容器，容器重建（`docker compose down && up`）也不会丢失。
