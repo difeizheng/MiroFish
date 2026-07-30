@@ -981,6 +981,110 @@ def _get_comment_info(
     return None
 
 
+# ===== docker patch: LLM 并发限流 + 429 指数退避重试 =====
+# 150 个 Agent 通过 asyncio 并发打 new-api 中转，瞬时并发超过上游配额会产生大量 429。
+# 该包装器：①两个平台共享一个全局并发上限（信号量）②遇 429 按 Retry-After / 指数退避重试。
+# 环境变量可调：LLM_MAX_CONCURRENCY（默认 8）、LLM_RATE_LIMIT_RETRIES（默认 8）
+import threading
+import time as _time
+from camel.models import BaseModelBackend
+
+
+class RateLimitedModel(BaseModelBackend):
+    """包装 camel 模型后端：按服务商分桶限流 + 429 退避重试（对 ChatAgent 透明，继承 BaseModelBackend）
+
+    信号量以 base_url 为 key：同一家服务商（两个平台都走同一家时）共享一个并发桶，
+    不同服务商（LLM_* 与 LLM_BOOST_* 双配置时）各自独立限流，互不挤占配额。
+    """
+
+    _sems = {}                 # {sem_key: (async_sem, sync_sem)}
+    _sems_lock = threading.Lock()
+
+    def __init__(self, inner: BaseModelBackend, max_concurrency: int = 8, max_retries: int = 8,
+                 sem_key: str = 'default'):
+        self.__dict__['_inner'] = inner
+        super().__init__(
+            model_type=inner.model_type,
+            model_config_dict=getattr(inner, 'model_config_dict', None),
+            token_counter=getattr(inner, '_token_counter', None),
+        )
+        self._rl_max_retries = max_retries
+        with RateLimitedModel._sems_lock:
+            if sem_key not in RateLimitedModel._sems:
+                RateLimitedModel._sems[sem_key] = (
+                    asyncio.Semaphore(max_concurrency),
+                    threading.Semaphore(max_concurrency),
+                )
+        self._async_sem, self._sync_sem = RateLimitedModel._sems[sem_key]
+
+    def __getattr__(self, name):
+        inner = self.__dict__.get('_inner')
+        if inner is None:
+            raise AttributeError(name)
+        return getattr(inner, name)
+
+    @property
+    def token_counter(self):
+        return self._inner.token_counter
+
+    def _run(self, messages, response_format=None, tools=None):
+        return self._inner._run(messages, response_format, tools)
+
+    async def _arun(self, messages, response_format=None, tools=None):
+        return await self._inner._arun(messages, response_format, tools)
+
+    @staticmethod
+    def _is_rate_limit(exc) -> bool:
+        status = getattr(exc, 'status_code', None) or getattr(exc, 'http_status', None)
+        if status == 429:
+            return True
+        msg = str(exc).lower()
+        return ('429' in msg or 'rate limit' in msg or 'rate_limit' in msg
+                or 'too many requests' in msg)
+
+    @staticmethod
+    def _retry_after(exc):
+        try:
+            resp = getattr(exc, 'response', None)
+            if resp is not None:
+                v = resp.headers.get('retry-after')
+                if v:
+                    return min(float(v), 60.0)
+        except Exception:
+            pass
+        return None
+
+    def _backoff(self, attempt: int, exc) -> float:
+        ra = self._retry_after(exc)
+        if ra is not None:
+            return ra
+        return min(2.0 * (2 ** attempt), 60.0) * (0.5 + random.random())
+
+    def run(self, messages, response_format=None, tools=None):
+        with self._sync_sem:
+            for attempt in range(self._rl_max_retries):
+                try:
+                    return self._inner.run(messages, response_format, tools)
+                except Exception as e:
+                    if not self._is_rate_limit(e) or attempt == self._rl_max_retries - 1:
+                        raise
+                    delay = self._backoff(attempt, e)
+                    print(f"[限流] 429 同步重试第 {attempt + 1} 次，等待 {delay:.1f}s", flush=True)
+                    _time.sleep(delay)
+
+    async def arun(self, messages, response_format=None, tools=None):
+        async with self._async_sem:
+            for attempt in range(self._rl_max_retries):
+                try:
+                    return await self._inner.arun(messages, response_format, tools)
+                except Exception as e:
+                    if not self._is_rate_limit(e) or attempt == self._rl_max_retries - 1:
+                        raise
+                    delay = self._backoff(attempt, e)
+                    print(f"[限流] 429 异步重试第 {attempt + 1} 次，等待 {delay:.1f}s", flush=True)
+                    await asyncio.sleep(delay)
+
+
 def create_model(config: Dict[str, Any], use_boost: bool = False):
     """
     创建LLM模型
@@ -1031,10 +1135,24 @@ def create_model(config: Dict[str, Any], use_boost: bool = False):
     
     print(f"{config_label} model={llm_model}, base_url={llm_base_url[:40] if llm_base_url else '默认'}...")
     
-    return ModelFactory.create(
+    # docker patch: 显式传入凭证，避免两个平台共享进程级 OPENAI_API_KEY 环境变量
+    # （原版只改 os.environ，Reddit 后初始化会覆盖，导致全部调用都走 LLM_BOOST_*）
+    base_model = ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI,
         model_type=llm_model,
+        api_key=llm_api_key or None,
+        url=llm_base_url or None,
     )
+    # docker patch: 全局限流 + 429 退避重试，防止 150 Agent 瞬时并发打爆中转站
+    try:
+        max_conc = max(1, int(os.environ.get("LLM_MAX_CONCURRENCY", "8")))
+        max_rt = max(1, int(os.environ.get("LLM_RATE_LIMIT_RETRIES", "8")))
+    except ValueError:
+        max_conc, max_rt = 8, 8
+    # 以 base_url 为限流桶 key：双服务商时两平台各自独立限流，单服务商时共享一个桶
+    sem_key = llm_base_url or 'default'
+    print(f"[限流] 桶={sem_key[:40]}, 并发上限={max_conc}, 429重试={max_rt}次", flush=True)
+    return RateLimitedModel(base_model, max_concurrency=max_conc, max_retries=max_rt, sem_key=sem_key)
 
 
 def get_active_agents_for_round(
