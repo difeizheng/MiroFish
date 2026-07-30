@@ -33,6 +33,10 @@ dependencies = [
     # 工具库
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
+
+    # 显式声明 torch（camel-ai 的传递依赖）：uv 的源钉版只对直接依赖生效，
+    # 声明后 Linux 下解析为 CPU 版（见文末 tool.uv.sources），避免 ~6.6GB CUDA 死重
+    "torch>=2.0",
 ]
 
 [project.optional-dependencies]
@@ -54,3 +58,18 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+
+# ===== 本地优化：Linux 下使用 CPU 版 PyTorch =====
+# camel-ai 传递依赖 torch，默认解析为 CUDA 版会带入 ~6.6GB 死重
+# （nvidia 4.4GB + torch GPU 1.7GB + triton 0.6GB），而本项目所有 LLM 调用均为远程 API，
+# torch 仅为传递依赖。CPU 版 ~190MB，功能零影响。仅对 Linux（Docker 部署）生效，
+# Windows/macOS 本地开发仍走 PyPI 默认版本。
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", marker = "platform_system == 'Linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
