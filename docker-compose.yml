@@ -1,14 +1,43 @@
 services:
   mirofish:
-    image: ghcr.io/666ghj/mirofish:latest
+    # image: ghcr.io/666ghj/mirofish:latest
     # 加速镜像（如拉取缓慢可替换上方地址）
-    # image: ghcr.nju.edu.cn/666ghj/mirofish:latest
+    image: ghcr.nju.edu.cn/666ghj/mirofish:latest
     container_name: mirofish
     env_file:
       - .env
+    environment:
+      # 中国时区（容器内默认 UTC，日志/任务时间会差 8 小时）
+      TZ: Asia/Shanghai
+      # HuggingFace 国内镜像（OASIS 会下载 twhin-bert 模型，直连 HF 会被墙到几乎不动）
+      HF_ENDPOINT: https://hf-mirror.com
     ports:
-      - "3000:3000"
+      - "3020:3000"
       - "5001:5001"
     restart: unless-stopped
     volumes:
       - ./backend/uploads:/app/backend/uploads
+      # 持久化 HuggingFace 模型缓存，避免容器重建后重新下载 1.1GB 模型
+      - ./backend/hf-cache:/root/.cache/huggingface
+      # ===== 本地热修复补丁（镜像版本落后，重建容器也不丢失，详见 docker-patches/README.md）=====
+      # 1. Zep 分页修复：镜像内 zep-cloud 3.13 只读第一页（服务端单页上限 50），导致实体/边只显示 50
+      - ./docker-patches/backend/zep_paging.py:/app/backend/app/utils/zep_paging.py:ro
+      # 2. 图谱数据本地缓存：全量拉取需数分钟，缓存到 uploads/graphs/ 实现秒开
+      - ./docker-patches/backend/graph_builder.py:/app/backend/app/services/graph_builder.py:ro
+      - ./docker-patches/backend/graph_api.py:/app/backend/app/api/graph.py:ro
+      # 5. Agent 实体质量过滤：通用名黑名单 + 度数阈值（AGENT_MIN_DEGREE，默认 3）
+      #    + 数量上限（AGENT_MAX_ENTITIES，默认 150），避免 1200+ 无意义 Agent 烧 token
+      - ./docker-patches/backend/zep_entity_reader.py:/app/backend/app/services/zep_entity_reader.py:ro
+      # 9. 检索工具本地缓存降级（Zep 额度耗尽离线模式，GRAPH_LOCAL_ONLY=1 时跳过 Zep）
+      - ./docker-patches/backend/zep_tools.py:/app/backend/app/services/zep_tools.py:ro
+      # 10. 记忆回写本地降级（失败批次/本地模式写 uploads/graphs/<id>.memory.jsonl）
+      - ./docker-patches/backend/zep_graph_memory_updater.py:/app/backend/app/services/zep_graph_memory_updater.py:ro
+      # 6. 并行模拟双 LLM 隔离：原版只改进程级 OPENAI_API_KEY 环境变量，Reddit 后初始化覆盖
+      #    导致两个平台的调用全走 LLM_BOOST_*；补丁改为 ModelFactory.create 显式传 api_key/url
+      - ./docker-patches/backend/run_parallel_simulation.py:/app/backend/scripts/run_parallel_simulation.py:ro
+      # 3. 前端：手动刷新/构建完成时传 ?refresh=1 强制重拉，平时走缓存
+      - ./docker-patches/frontend/api_graph.js:/app/frontend/src/api/graph.js:ro
+      - ./docker-patches/frontend/MainView.vue:/app/frontend/src/views/MainView.vue:ro
+      # 4. 前端：大图渐进式探索（Top-N 核心骨架+双击展开邻居+类型过滤+搜索定位），
+      #    避免 2700+ 节点全量 SVG 渲染卡死页面
+      - ./docker-patches/frontend/GraphPanel.vue:/app/frontend/src/components/GraphPanel.vue:ro
