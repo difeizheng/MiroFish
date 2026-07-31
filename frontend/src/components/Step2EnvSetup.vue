@@ -198,7 +198,7 @@
                       <span class="agent-name">{{ agent.entity_name }}</span>
                     </div>
                     <div class="agent-tags">
-                      <span class="agent-type">{{ agent.entity_type }}</span>
+                      <span class="agent-type">{{ translateEntityType(agent.entity_type) }}</span>
                       <span class="agent-stance" :class="'stance-' + agent.stance">{{ agent.stance }}</span>
                     </div>
                   </div>
@@ -634,6 +634,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { translateEntityType } from '../utils/entityType'
 import {
   prepareSimulation,
   getPrepareStatus,
@@ -813,7 +814,7 @@ const startPrepareSimulation = async () => {
         expectedTotal.value = res.data.expected_entities_count
         addLog(t('log.zepEntitiesFound', { count: res.data.expected_entities_count }))
         if (res.data.entity_types && res.data.entity_types.length > 0) {
-          addLog(t('log.entityTypes', { types: res.data.entity_types.join(', ') }))
+          addLog(t('log.entityTypes', { types: res.data.entity_types.map(translateEntityType).join(', ') }))
         }
       }
       

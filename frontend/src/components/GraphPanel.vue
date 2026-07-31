@@ -31,7 +31,7 @@
             @click="focusNode(r)"
           >
             <span class="search-item-name">{{ r.name }}</span>
-            <span class="search-item-type">{{ r.labels?.find(l => l !== 'Entity') || 'Entity' }}</span>
+            <span class="search-item-type">{{ translateEntityType(r.labels?.find(l => l !== 'Entity') || 'Entity') }}</span>
           </div>
           <div v-if="!searchResults.length" class="search-item empty">无匹配实体</div>
         </div>
@@ -94,7 +94,7 @@
           <div class="detail-panel-header">
             <span class="detail-title">{{ selectedItem.type === 'node' ? $t('graph.nodeDetails') : $t('graph.relationship') }}</span>
             <span v-if="selectedItem.type === 'node'" class="detail-type-badge" :style="{ background: selectedItem.color, color: '#fff' }">
-              {{ selectedItem.entityType }}
+              {{ translateEntityType(selectedItem.entityType) }}
             </span>
             <button class="detail-close" @click="closeDetailPanel">×</button>
           </div>
@@ -136,7 +136,7 @@
               <div class="section-title">Labels:</div>
               <div class="labels-list">
                 <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">
-                  {{ label }}
+                  {{ translateEntityType(label) }}
                 </span>
               </div>
             </div>
@@ -256,7 +256,7 @@
 
     <!-- 底部图例 (Bottom Left) -->
     <div v-if="graphData && entityTypes.length" class="graph-legend">
-      <span class="legend-title">Entity Types</span>
+      <span class="legend-title">{{ $t('graph.entityTypesLegend') }}</span>
       <div class="legend-items">
         <div
           class="legend-item clickable"
@@ -266,7 +266,7 @@
           :title="hiddenTypes.has(type.name) ? '点击显示该类型' : '点击隐藏该类型'"
         >
           <span class="legend-dot" :style="{ background: type.color }"></span>
-          <span class="legend-label">{{ type.name }} ({{ type.count }})</span>
+          <span class="legend-label">{{ translateEntityType(type.name) }} ({{ type.count }})</span>
         </div>
       </div>
     </div>
@@ -285,6 +285,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { translateEntityType } from '../utils/entityType'
 
 const props = defineProps({
   graphData: Object,
