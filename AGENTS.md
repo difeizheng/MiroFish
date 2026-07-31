@@ -24,3 +24,20 @@
 - 真实模拟会消耗大量 LLM token，首次验证用 **<40 轮** 小规模模拟（.env.example 官方建议）
 - Windows 下不要绕过 `run.py` 直接起 Flask——控制台中文会乱码（run.py 开头的 UTF-8 reconfigure 就是为这个）
 - Docker 部署时 `.env` 通过 `env_file` 注入，`backend/uploads` 挂载为 volume（docker-compose.yml），改端口需同时改 compose 和 vite proxy
+
+## Issue 平台：Multica
+
+本项目 issue 台账建在 **Multica**（不建在 GitHub Issues）。CLI：`~/.multica/bin/multica`（用前 `export PATH="$HOME/.multica/bin:$PATH"`）。
+
+- **workspace**：`myhome`（ID `45ca0bde`，默认 workspace）
+- **project**：`MiroFish`（ID `8271761a`）
+- **label 体系**（workspace 级，用 UUID 前缀）：
+  - 类型：`缺陷` bf1b / `优化` ed6b / `决策` d7c6 / `技术债` 46f3 / `疑问` f172
+  - 模块：`后端` aa97 / `前端` 4aa0 / `模拟` dd2e / `Docker` 5900 / `Zep` 5b70 / `LLM` 3b64
+- **命令范式**：
+  - 建：`multica issue create --project 8271761a --title "..." --description-file "<绝对路径>.md" --status done|backlog --priority high|medium|low`（输出 JSON，取 `identifier` 字段即 KEY 如 MYH-208）
+  - 加 label：`multica issue label add <KEY> <label-uuid前缀>`（注意是 UUID 前缀不是 name）
+  - 查：`multica issue list --project 8271761a --output table`
+  - 关闭重复：`multica issue status <KEY> cancelled`
+- **注意**：Multica CLI 的 `table` 格式渲染中文会列宽错位，查 label 用 `--output json` + python 解析；网页端中文正常。
+- **代码仓库**：代码改动仍提交到 GitHub fork（origin=difeizheng/MiroFish，upstream=666ghj/MiroFish），Multica 只放问题/决策/优化台账。
