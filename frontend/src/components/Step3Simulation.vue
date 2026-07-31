@@ -688,11 +688,42 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
+onMounted(async () => {
   addLog(t('log.step3Init'))
-  if (props.simulationId) {
-    doStartSimulation()
+  if (!props.simulationId) return
+
+  // 本地补丁：进入模拟页先查当前状态，避免“从历史进来就强制重启模拟”。
+  // - running → 只恢复轮询，不 force restart（否则会杀掉正在跑的进程、丢数据）
+  // - completed / stopped / failed 且有数据 → 直接展示已有结果，不重跑
+  // - 其他（idle/无状态/空模拟）→ 才真正启动新模拟
+  try {
+    const res = await getRunStatus(props.simulationId)
+    if (res.success && res.data) {
+      const st = res.data.runner_status
+      const hasData = (res.data.total_actions_count || 0) > 0
+      if (st === 'running') {
+        addLog('检测到模拟正在运行，恢复进度展示（未重新启动）')
+        runStatus.value = res.data
+        phase.value = 1
+        startStatusPolling()
+        startDetailPolling()
+        return
+      }
+      if ((st === 'completed' || st === 'stopped' || st === 'failed') && hasData) {
+        addLog('检测到已有模拟结果，展示历史数据（未重新启动）')
+        runStatus.value = res.data
+        phase.value = 2
+        emit('update-status', st === 'failed' ? 'error' : 'completed')
+        startDetailPolling()
+        return
+      }
+    }
+  } catch (e) {
+    console.warn('查询模拟状态失败，按新模拟处理:', e)
   }
+
+  // 仅在无进行中/已完成模拟时才启动
+  doStartSimulation()
 })
 
 onUnmounted(() => {

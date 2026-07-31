@@ -9,6 +9,7 @@ OASIS Agent Profile生成器
 """
 
 import json
+import os
 import random
 import time
 from typing import Dict, Any, List, Optional
@@ -360,6 +361,10 @@ class OasisProfileGenerator:
         """
         import concurrent.futures
         
+        # 本地补丁：GRAPH_LOCAL_ONLY 离线模式直接走本地图谱缓存，不碰 Zep
+        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+            return self._search_local_cache_for_entity(entity)
+        
         if not self.zep_client:
             return {"facts": [], "node_summaries": [], "context": ""}
         
@@ -451,7 +456,78 @@ class OasisProfileGenerator:
             logger.warning(f"Zep检索失败 ({entity_name}): {e}")
             if not is_retryable_zep_error(e):
                 raise
+            # 本地补丁：重试型错误（如额度耗尽/限流）耗尽后降级到本地缓存
+            cached = self._search_local_cache_for_entity(entity)
+            if cached["facts"] or cached["node_summaries"]:
+                logger.info(f"Zep不可用，已降级到本地缓存: {entity_name}, {len(cached['facts'])} 事实/{len(cached['node_summaries'])} 节点")
+                return cached
         
+        return results
+
+    def _search_local_cache_for_entity(self, entity: EntityNode) -> Dict[str, Any]:
+        """
+        本地补丁：从本地图谱缓存（uploads/graphs/<graph_id>.json）捞该实体的边和邻居，
+        构建 facts/node_summaries/context，替代 Zep 混合检索（离线降级 / Zep额度耗尽时使用）
+        """
+        results = {"facts": [], "node_summaries": [], "context": ""}
+        try:
+            from .zep_entity_reader import ZepEntityReader
+            data = ZepEntityReader._read_graph_cache_data(self.graph_id)
+            if not data:
+                return results
+            edges = data.get('edges', []) or []
+            nodes = data.get('nodes', []) or []
+            uid = getattr(entity, 'uuid', None)
+            uname = getattr(entity, 'name', '')
+
+            # 与该实体相关的边（按 uuid 匹配，兼容 name）
+            rel_edges = [
+                e for e in edges
+                if e.get('source_node_uuid') == uid or e.get('target_node_uuid') == uid
+            ] or [
+                e for e in edges
+                if e.get('source_node_name') == uname or e.get('target_node_name') == uname
+            ]
+            facts = []
+            neighbor_names = set()
+            for e in rel_edges:
+                if e.get('fact'):
+                    facts.append(e['fact'])
+                # 对端节点名
+                if e.get('source_node_uuid') == uid or e.get('source_node_name') == uname:
+                    if e.get('target_node_name'):
+                        neighbor_names.add(e['target_node_name'])
+                else:
+                    if e.get('source_node_name'):
+                        neighbor_names.add(e['source_node_name'])
+
+            # 邻居节点的 summary（如有）
+            neighbor_uids = set()
+            for e in rel_edges:
+                if e.get('source_node_uuid') == uid:
+                    neighbor_uids.add(e.get('target_node_uuid'))
+                elif e.get('target_node_uuid') == uid:
+                    neighbor_uids.add(e.get('source_node_uuid'))
+            summaries = []
+            node_by_uid = {n.get('uuid'): n for n in nodes}
+            for nid in neighbor_uids:
+                n = node_by_uid.get(nid)
+                if n and n.get('summary'):
+                    summaries.append(f"{n.get('name')}: {n['summary']}")
+                elif n and n.get('name'):
+                    summaries.append(n.get('name'))
+
+            results["facts"] = facts[:30]
+            results["node_summaries"] = list(summaries)[:20]
+            parts = []
+            if facts:
+                parts.append("事实信息:\n" + "\n".join(f"- {f}" for f in facts[:20]))
+            if summaries:
+                parts.append("相关实体:\n" + "\n".join(f"- {s}" for s in summaries[:10]))
+            results["context"] = "\n\n".join(parts)
+            logger.debug(f"本地缓存检索: {uname}, {len(facts)} 事实, {len(summaries)} 邻居")
+        except Exception as ex:
+            logger.warning(f"本地缓存检索失败 ({getattr(entity, 'name', '')}): {ex}")
         return results
     
     def _build_entity_context(self, entity: EntityNode) -> str:
