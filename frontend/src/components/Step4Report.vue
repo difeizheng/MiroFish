@@ -394,6 +394,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } f
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getAgentLog, getConsoleLog } from '../api/report'
+import { translateEntityType } from '../utils/entityType'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -1071,7 +1072,7 @@ const InsightDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 12)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i, title: entity.summary || '' }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                h('span', { class: 'entity-type' }, entity.type),
+                h('span', { class: 'entity-type' }, translateEntityType(entity.type)),
                 entity.relatedFactsCount > 0 && h('span', { class: 'entity-fact-count' }, t('step4.factCount', { count: entity.relatedFactsCount }))
               ])
             )
@@ -1260,7 +1261,7 @@ const PanoramaDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 8)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                entity.type && h('span', { class: 'entity-type' }, entity.type)
+                entity.type && h('span', { class: 'entity-type' }, translateEntityType(entity.type))
               ])
             )
           ) : h('div', { class: 'empty-state' }, t('step4.emptyEntities')),
@@ -1695,7 +1696,7 @@ const QuickSearchDisplay = {
             props.result.nodes.map((node, i) => 
               h('div', { class: 'node-tag', key: i }, [
                 h('span', { class: 'node-name' }, node.name),
-                node.type && h('span', { class: 'node-type' }, node.type)
+                node.type && h('span', { class: 'node-type' }, translateEntityType(node.type))
               ])
             )
           )
