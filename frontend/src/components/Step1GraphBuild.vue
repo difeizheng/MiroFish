@@ -32,7 +32,7 @@
             <div class="detail-header">
                <div class="detail-title-group">
                   <span class="detail-type-badge">{{ selectedOntologyItem.itemType === 'entity' ? 'ENTITY' : 'RELATION' }}</span>
-                  <span class="detail-name">{{ selectedOntologyItem.name }}</span>
+                  <span class="detail-name">{{ selectedOntologyItem.itemType === 'entity' ? translateEntityType(selectedOntologyItem.name) : selectedOntologyItem.name }}</span>
                </div>
                <button class="close-btn" @click="selectedOntologyItem = null">×</button>
             </div>
@@ -83,7 +83,7 @@
                 class="entity-tag clickable"
                 @click="selectOntologyItem(entity, 'entity')"
               >
-                {{ entity.name }}
+                {{ translateEntityType(entity.name) }}
               </span>
             </div>
           </div>
@@ -191,6 +191,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { createSimulation } from '../api/simulation'
+import { translateEntityType } from '../utils/entityType'
 
 const router = useRouter()
 const { t } = useI18n()

@@ -66,14 +66,4 @@ export function translateEntityType(type) {
   return type
 }
 
-/**
- * 批量翻译（用于图例等列表场景）。
- * @param {Array<{name: string, count?: number, color?: string}>} types
- * @returns {Array} 与入参同结构，name 字段替换为译文
- */
-export function translateEntityTypes(types) {
-  if (!Array.isArray(types)) return types
-  return types.map(t => (t && t.name ? { ...t, name: translateEntityType(t.name) } : t))
-}
-
 export default translateEntityType
