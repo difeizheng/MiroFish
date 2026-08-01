@@ -1,7 +1,12 @@
-"""\n配置管理\n统一从项目根目录的 .env 文件加载配置\n"""
+"""
+配置管理
+统一从项目根目录的 .env 文件加载配置
+"""
 
 import os
-from dotenv import load_dotenv
+import threading
+from pathlib import Path
+from dotenv import load_dotenv, dotenv_values
 
 # 加载项目根目录的 .env 文件
 # 路径: MiroFish/.env (相对于 backend/app/config.py)
@@ -14,37 +19,132 @@ else:
     load_dotenv(override=True)
 
 
-class Config:
-    """Flask配置类"""
-    
+# ---------- LLM 参数热更新支持 ----------
+# .env 文件路径（绝对路径，供 config_api 写入用）
+ENV_FILE_PATH = Path(project_root_env).resolve() if os.path.exists(project_root_env) else None
+
+# 运行时 LLM 覆盖值（由 config_api POST 写入，优先级最高）
+# 为 None 表示未覆盖，回退到 .env / os.environ
+_llm_overrides: dict = {}
+_llm_override_lock = threading.Lock()
+
+# .env 文件读取缓存（按 mtime 失效，避免每次访问都读文件）
+_env_cache: dict = {"mtime": None, "values": {}}
+_env_cache_lock = threading.Lock()
+
+
+def _read_env_file():
+    """读取 .env 文件内容（带 mtime 缓存）。文件不存在时回退空 dict。"""
+    if ENV_FILE_PATH is None or not ENV_FILE_PATH.exists():
+        return {}
+    try:
+        mtime = ENV_FILE_PATH.stat().st_mtime
+    except OSError:
+        return _env_cache["values"]
+    with _env_cache_lock:
+        if _env_cache["mtime"] != mtime:
+            _env_cache["values"] = dotenv_values(ENV_FILE_PATH)
+            _env_cache["mtime"] = mtime
+        return _env_cache["values"]
+
+
+def _get_llm_config(key, default=''):
+    """
+    动态读取一个 LLM 配置项，优先级：
+    运行时覆盖（_llm_overrides） > os.environ > .env 文件 > default
+
+    每次调用都重新求值，实现改完即生效（无需重启）。
+    """
+    with _llm_override_lock:
+        override = _llm_overrides.get(key)
+    if override is not None:
+        return override
+    env_val = os.environ.get(key)
+    if env_val:
+        return env_val
+    return _read_env_file().get(key, default)
+
+
+def set_llm_override(key, value):
+    """设置运行时 LLM 覆盖值（供 config_api 调用）。None 表示清除覆盖。
+
+    同时写入 os.environ：模拟主流程 run_parallel_simulation.py 是子进程，
+    直接读 os.environ（LLM_MAX_CONCURRENCY / LLM_BOOST_* 等），子进程只能
+    通过环境变量继承热更新后的值。
+    """
+    with _llm_override_lock:
+        if value is None:
+            _llm_overrides.pop(key, None)
+            os.environ.pop(key, None)
+        else:
+            _llm_overrides[key] = value
+            os.environ[key] = value
+
+
+def get_all_llm_config():
+    """返回当前生效的全部 LLM 配置（供前端展示）。"""
+    return {
+        "LLM_API_KEY": _get_llm_config("LLM_API_KEY"),
+        "LLM_BASE_URL": _get_llm_config("LLM_BASE_URL", "https://api.openai.com/v1"),
+        "LLM_MODEL_NAME": _get_llm_config("LLM_MODEL_NAME", "gpt-4o-mini"),
+        "LLM_BOOST_API_KEY": _get_llm_config("LLM_BOOST_API_KEY"),
+        "LLM_BOOST_BASE_URL": _get_llm_config("LLM_BOOST_BASE_URL"),
+        "LLM_BOOST_MODEL_NAME": _get_llm_config("LLM_BOOST_MODEL_NAME"),
+        "LLM_MAX_CONCURRENCY": _get_llm_config("LLM_MAX_CONCURRENCY", "4"),
+        "LLM_RATE_LIMIT_RETRIES": _get_llm_config("LLM_RATE_LIMIT_RETRIES", "8"),
+    }
+
+
+# ---- Config metaclass：让 LLM 字段动态求值 ----
+# 关键：访问 Config.LLM_MODEL_NAME 走的是 type(Config).__getattribute__，
+# 所以必须用 metaclass 的 property 才能拦截类属性访问。
+class _ConfigMeta(type):
+    """Config 的元类，将 LLM_* 字段变为每次访问动态求值的 property。"""
+
+    @property
+    def LLM_API_KEY(cls):
+        return _get_llm_config("LLM_API_KEY")
+
+    @property
+    def LLM_BASE_URL(cls):
+        return _get_llm_config("LLM_BASE_URL", "https://api.openai.com/v1")
+
+    @property
+    def LLM_MODEL_NAME(cls):
+        return _get_llm_config("LLM_MODEL_NAME", "gpt-4o-mini")
+
+
+class Config(metaclass=_ConfigMeta):
+    """Flask配置类
+
+    注意：LLM 相关字段（LLM_API_KEY / LLM_BASE_URL / LLM_MODEL_NAME）通过 metaclass
+    的 property 动态读取，运行时通过 config_api 修改后无需重启即生效。
+    其它非 LLM 配置仍是模块加载时的静态值（ZEP_API_KEY 等改了要重建连接，不该热更）。
+    """
+
     # Flask配置
     SECRET_KEY = os.environ.get('SECRET_KEY', 'mirofish-secret-key')
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    
+
     # JSON配置 - 禁用ASCII转义，让中文直接显示
     JSON_AS_ASCII = False
-    
-    # LLM配置（统一使用OpenAI格式）
-    LLM_API_KEY = os.environ.get('LLM_API_KEY')
-    LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.openai.com/v1')
-    LLM_MODEL_NAME = os.environ.get('LLM_MODEL_NAME', 'gpt-4o-mini')
-    
+
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
-    
+
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
     ALLOWED_EXTENSIONS = {'pdf', 'md', 'txt', 'markdown'}
-    
+
     # 文本处理配置
     DEFAULT_CHUNK_SIZE = 500  # 默认切块大小
     DEFAULT_CHUNK_OVERLAP = 50  # 默认重叠大小
-    
+
     # OASIS模拟配置
     OASIS_DEFAULT_MAX_ROUNDS = int(os.environ.get('OASIS_DEFAULT_MAX_ROUNDS', '10'))
     OASIS_SIMULATION_DATA_DIR = os.path.join(os.path.dirname(__file__), '../uploads/simulations')
-    
+
     # OASIS平台可用动作配置
     OASIS_TWITTER_ACTIONS = [
         'CREATE_POST', 'LIKE_POST', 'REPOST', 'FOLLOW', 'DO_NOTHING', 'QUOTE_POST'
@@ -54,17 +154,17 @@ class Config:
         'LIKE_COMMENT', 'DISLIKE_COMMENT', 'SEARCH_POSTS', 'SEARCH_USER',
         'TREND', 'REFRESH', 'DO_NOTHING', 'FOLLOW', 'MUTE'
     ]
-    
+
     # Report Agent配置
     REPORT_AGENT_MAX_TOOL_CALLS = int(os.environ.get('REPORT_AGENT_MAX_TOOL_CALLS', '5'))
     REPORT_AGENT_MAX_REFLECTION_ROUNDS = int(os.environ.get('REPORT_AGENT_MAX_REFLECTION_ROUNDS', '2'))
     REPORT_AGENT_TEMPERATURE = float(os.environ.get('REPORT_AGENT_TEMPERATURE', '0.5'))
-    
+
     @classmethod
     def validate(cls) -> list[str]:
         """验证必要配置"""
         errors: list[str] = []
-        if not cls.LLM_API_KEY:
+        if not _get_llm_config("LLM_API_KEY"):
             errors.append("LLM_API_KEY 未配置")
         if not cls.ZEP_API_KEY:
             errors.append("ZEP_API_KEY 未配置")

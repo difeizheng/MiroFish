@@ -21,6 +21,7 @@
       </div>
 
       <div class="header-right">
+        <button class="llm-config-btn" @click="showLLMConfig = true" title="LLM 配置">⚙️</button>
         <LanguageSwitcher />
         <div class="step-divider"></div>
         <div class="workflow-step">
@@ -34,6 +35,9 @@
         </span>
       </div>
     </header>
+
+    <!-- LLM 配置面板 -->
+    <LLMConfigPanel :visible="showLLMConfig" @close="showLLMConfig = false" />
 
     <!-- Main Content Area -->
     <main class="content-area">
@@ -86,6 +90,7 @@ import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
+import LLMConfigPanel from '../components/LLMConfigPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -93,6 +98,7 @@ const { t, tm } = useI18n()
 
 // Layout State
 const viewMode = ref('split') // graph | split | workbench
+const showLLMConfig = ref(false)
 
 // Step State
 const currentStep = ref(1) // 1: 图谱构建, 2: 环境搭建, 3: 开始模拟, 4: 报告生成, 5: 深度互动
@@ -495,6 +501,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.llm-config-btn {
+  background: none;
+  border: 1px solid #2a2e38;
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.llm-config-btn:hover {
+  background: #2a2e38;
+  border-color: #4fc3f7;
 }
 
 .workflow-step {
