@@ -272,7 +272,7 @@
     "createAgents": "Start Creating",
     "stopCreate": "Stop Creating",
     "creatingAgents": "Creating…",
-    "stopCreateConfirm": "After stopping, the frontend stops polling, but already-submitted agents will still finish in the backend. Continue?"
+    "stopCreateConfirm": "Will notify the backend to stop generating agents. Already-started ones will be kept. Continue?"
   },
   "step3": {
     "startGenerateReport": "Generate Report",
@@ -551,7 +551,8 @@
     "readingGraphEntities": "Reading Graph Entities",
     "generatingProfiles": "Generating Agent Profiles",
     "generatingSimConfig": "Generating Simulation Config",
-    "preparingScripts": "Preparing Scripts"
+    "preparingScripts": "Preparing Scripts",
+    "taskCancelling": "Cancelling…"
   },
   "log": {
     "preparingGoBack": "Preparing to return to Step 2, closing simulation...",
@@ -669,7 +670,10 @@
     "customSimRounds": "Custom simulation rounds: {rounds} rounds",
     "prepareWaitingForUser": "Waiting to create agents (click \"Start Creating\" below)",
     "prepareStarted": "Started creating agents…",
-    "prepareStopped": "Creation polling stopped (backend task will continue to finish)"
+    "prepareStopped": "Creation polling stopped (backend task will continue to finish)",
+    "prepareCancelled": "Cancel request sent, backend will stop at the next checkpoint",
+    "prepareCancelNotFound": "No running prepare task found (may have completed or already cancelled)",
+    "prepareCancelFailed": "Cancel failed: {error}"
   },
   "report": {
     "taskStarted": "Report generation task started",

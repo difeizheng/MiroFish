@@ -272,7 +272,7 @@
     "createAgents": "开始创建",
     "stopCreate": "停止创建",
     "creatingAgents": "创建中…",
-    "stopCreateConfirm": "停止后前端不再轮询，但后端已提交的 Agent 会继续生成完成。确定停止？"
+    "stopCreateConfirm": "将通知后端停止生成 Agent，已开始生成的会保留。确定停止？"
   },
   "step3": {
     "startGenerateReport": "开始生成结果报告",
@@ -551,7 +551,8 @@
     "readingGraphEntities": "读取图谱实体",
     "generatingProfiles": "生成Agent人设",
     "generatingSimConfig": "生成模拟配置",
-    "preparingScripts": "准备模拟脚本"
+    "preparingScripts": "准备模拟脚本",
+    "taskCancelling": "取消中…"
   },
   "log": {
     "preparingGoBack": "准备返回 Step 2，正在关闭模拟...",
@@ -669,7 +670,10 @@
     "customSimRounds": "自定义模拟轮数: {rounds} 轮",
     "prepareWaitingForUser": "等待开始创建 Agent（点击下方「开始创建」按钮）",
     "prepareStarted": "开始创建 Agent…",
-    "prepareStopped": "已停止创建（后端任务将继续跑完，不再轮询进度）"
+    "prepareStopped": "已停止创建（后端任务将继续跑完，不再轮询进度）",
+    "prepareCancelled": "已发送取消请求，后端将在下一个检查点终止生成",
+    "prepareCancelNotFound": "未找到正在运行的创建任务（可能已完成或已取消）",
+    "prepareCancelFailed": "取消失败：{error}"
   },
   "report": {
     "taskStarted": "报告生成任务开始",

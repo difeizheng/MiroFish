@@ -629,7 +629,8 @@ def prepare_simulation():
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
                     parallel_profile_count=parallel_profile_count,
-                    agent_count=agent_count
+                    agent_count=agent_count,
+                    task_id=task_id
                 )
 
                 if result_state.status == SimulationStatus.FAILED:
@@ -793,6 +794,72 @@ def get_prepare_status():
         
     except Exception as e:
         logger.error(f"查询任务状态失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/prepare/cancel', methods=['POST'])
+def cancel_prepare(simulation_id: str):
+    """
+    取消正在进行的 prepare 任务（方案 B：真正中断后端生成）
+    
+    原理：设置 TaskManager 的取消标志，后台线程在下一个检查点（Agent 循环每次迭代、阶段切换）检测后自行终止。
+    
+    请求（JSON）：
+        {
+            "task_id": "task_xxxx"  // 可选，有则精准定位；无则按 simulation_id 找正在跑的 task
+        }
+    
+    返回：
+        {
+            "success": true,
+            "data": {"status": "cancelled", "message": "..."}
+        }
+    """
+    from ..models.task import TaskManager
+    try:
+        data = request.get_json() or {}
+        task_id = data.get('task_id')
+        tm = TaskManager()
+        
+        # 有 task_id 直接收
+        if task_id and tm.request_cancel(task_id):
+            logger.info(f"已请求取消 prepare 任务: {task_id} (simulation={simulation_id})")
+            return jsonify({
+                "success": True,
+                "data": {
+                    "status": "cancelling",
+                    "message": "取消请求已发送，后台线程将在下一个检查点终止"
+                }
+            })
+        
+        # 没 task_id 或 task_id 无效，按 simulation_id 找正在跑的 prepare task
+        if not task_id:
+            tasks = tm.list_tasks(task_type="simulation_prepare")
+            # list_tasks 返回 dict 列表，需要找 metadata.simulation_id 匹配且 status=processing 的
+            for tk in tasks:
+                meta = tk.get('metadata', {})
+                if (meta.get('simulation_id') == simulation_id
+                        and tk.get('status') == 'processing'):
+                    if tm.request_cancel(tk['task_id']):
+                        logger.info(f"按 simulation_id 找到并取消 prepare 任务: {tk['task_id']}")
+                        return jsonify({
+                            "success": True,
+                            "data": {
+                                "status": "cancelling",
+                                "message": "取消请求已发送，后台线程将在下一个检查点终止"
+                            }
+                        })
+        
+        return jsonify({
+            "success": False,
+            "error": "未找到正在运行的 prepare 任务（可能已完成或已取消）"
+        }), 404
+        
+    except Exception as e:
+        logger.error(f"取消 prepare 任务失败: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e)

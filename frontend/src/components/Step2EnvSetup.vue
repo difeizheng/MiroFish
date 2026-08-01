@@ -717,6 +717,7 @@ import { useI18n } from 'vue-i18n'
 import { translateEntityType } from '../utils/entityType'
 import {
   prepareSimulation,
+  cancelPrepare,
   getPrepareStatus,
   getSimulationProfilesRealtime,
   getSimulationConfig,
@@ -770,16 +771,28 @@ const handleStartCreate = () => {
   startPrepareSimulation()
 }
 
-// 手动停止创建 Agent（方案 A：仅停止前端轮询，后端任务继续跑完）
-const handleStopCreate = () => {
+// 手动停止创建 Agent（方案 B：调后端取消接口，真正中断生成）
+const handleStopCreate = async () => {
   if (!window.confirm(t('step2.stopCreateConfirm'))) return
   stoppingCreate.value = true
-  stopPolling()
-  stopProfilesPolling()
-  stopConfigPolling()
-  addLog(t('log.prepareStopped'))
-  emit('update-status', 'error')
-  phase.value = 0 // 回到初始态，允许重新点「开始创建」
+  try {
+    const res = await cancelPrepare(props.simulationId, taskId.value)
+    if (res.success) {
+      addLog(t('log.prepareCancelled'))
+      addLog(t('log.prepareStopped'))
+      stopPolling()
+      stopProfilesPolling()
+      stopConfigPolling()
+      emit('update-status', 'error')
+      phase.value = 0 // 回到初始态，允许重新点「开始创建」
+    } else {
+      addLog(t('log.prepareCancelNotFound'))
+    }
+  } catch (err) {
+    addLog(t('log.prepareCancelFailed', { error: err.message || '' }))
+  } finally {
+    stoppingCreate.value = false
+  }
 }
 
 watch(expectedTotal, (v) => {

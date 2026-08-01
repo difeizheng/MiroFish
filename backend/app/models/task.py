@@ -35,6 +35,7 @@ class Task:
     error: Optional[str] = None    # 错误信息
     metadata: Dict = field(default_factory=dict)  # 额外元数据
     progress_detail: Dict = field(default_factory=dict)  # 详细进度信息
+    cancel_requested: bool = False  # 用户请求取消（后台线程轮询此标志）
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -162,6 +163,28 @@ class TaskManager:
             message=t('progress.taskFailed'),
             error=error
         )
+    
+    def request_cancel(self, task_id: str) -> bool:
+        """
+        请求取消任务（设置取消标志，后台线程轮询后自行终止）
+        
+        Returns:
+            True 如果任务存在且已设置取消标志
+        """
+        with self._task_lock:
+            task = self._tasks.get(task_id)
+            if task and task.status == TaskStatus.PROCESSING:
+                task.cancel_requested = True
+                task.updated_at = datetime.now()
+                task.message = t('progress.taskCancelling') if 'progress.taskCancelling' in {} else "取消中…"
+                return True
+            return False
+    
+    def is_cancelled(self, task_id: str) -> bool:
+        """检查任务是否被请求取消"""
+        with self._task_lock:
+            task = self._tasks.get(task_id)
+            return bool(task and task.cancel_requested)
     
     def list_tasks(self, task_type: Optional[str] = None) -> list:
         """列出任务"""

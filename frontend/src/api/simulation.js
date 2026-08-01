@@ -17,6 +17,17 @@ export const prepareSimulation = (data) => {
 }
 
 /**
+ * 取消正在进行的 prepare 任务（方案 B：真正中断后端 Agent 生成）
+ * @param {string} simulationId - 模拟ID
+ * @param {string} [taskId] - 任务ID（可选，有则精准定位）
+ */
+export const cancelPrepare = (simulationId, taskId = null) => {
+  const body = taskId ? { task_id: taskId } : {}
+  // 走同源 vite proxy
+  return service.post(`/api/simulation/${simulationId}/prepare/cancel`, body, { baseURL: window.location.origin })
+}
+
+/**
  * LLM 评估当前 Agent 阵容质量
  * @param {string} simulationId - 模拟ID
  */

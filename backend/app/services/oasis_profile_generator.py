@@ -976,7 +976,8 @@ class OasisProfileGenerator:
         graph_id: Optional[str] = None,
         parallel_count: int = 5,
         realtime_output_path: Optional[str] = None,
-        output_platform: str = "reddit"
+        output_platform: str = "reddit",
+        task_id: Optional[str] = None
     ) -> List[OasisAgentProfile]:
         """
         批量从实体生成Agent Profile（支持并行生成）
@@ -1076,6 +1077,7 @@ class OasisProfileGenerator:
         print(f"{'='*60}\n")
         
         # 使用线程池并行执行
+        cancelled = False
         with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_count) as executor:
             # 提交所有任务
             future_to_entity = {
@@ -1085,6 +1087,19 @@ class OasisProfileGenerator:
             
             # 收集结果
             for future in concurrent.futures.as_completed(future_to_entity):
+                # ===== 取消检查：用户请求取消时停止派发新结果 =====
+                if task_id and not cancelled:
+                    from ..models.task import TaskManager
+                    if TaskManager().is_cancelled(task_id):
+                        cancelled = True
+                        logger.info(f"检测到取消请求，停止剩余 Agent 生成（已完成 {completed_count[0]}/{total}）")
+                        # 取消所有尚未开始的 future（已运行中的无法中断 LLM 调用，但会跳过结果收集）
+                        for f in future_to_entity:
+                            f.cancel()
+                        if progress_callback:
+                            progress_callback(completed_count[0], total, f"已取消，停止生成（{completed_count[0]}/{total} 完成）")
+                        break
+                
                 idx, entity = future_to_entity[future]
                 entity_type = entity.get_entity_type() or "Entity"
                 
@@ -1130,6 +1145,11 @@ class OasisProfileGenerator:
         print(f"\n{'='*60}")
         print(f"人设生成完成！共生成 {len([p for p in profiles if p])} 个Agent")
         print(f"{'='*60}\n")
+        
+        # 取消时抛异常，让上层处理
+        if cancelled:
+            from .simulation_manager import PrepareCancelled
+            raise PrepareCancelled(f"Agent 生成被取消（已生成 {len([p for p in profiles if p])}/{total}）")
         
         return profiles
     

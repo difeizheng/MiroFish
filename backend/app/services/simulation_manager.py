@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
+class PrepareCancelled(Exception):
+    """用户请求取消 prepare 任务"""
+    pass
+
 from ..config import Config
 from ..utils.logger import get_logger
 from .zep_entity_reader import ZepEntityReader, FilteredEntities
@@ -250,7 +254,8 @@ class SimulationManager:
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
         parallel_profile_count: int = 3,
-        agent_count: Optional[int] = None
+        agent_count: Optional[int] = None,
+        task_id: Optional[str] = None
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -285,6 +290,13 @@ class SimulationManager:
             state.config_generated = False
             state.config_reasoning = ""
             self._save_simulation_state(state)
+            
+            # 取消检查 helper：轮询 TaskManager 取消标志
+            def check_cancel(stage=""):
+                if task_id:
+                    from ..models.task import TaskManager
+                    if TaskManager().is_cancelled(task_id):
+                        raise PrepareCancelled(f"用户取消（阶段: {stage}）")
             
             sim_dir = self._get_simulation_dir(simulation_id)
             
@@ -368,6 +380,7 @@ class SimulationManager:
                 raise ValueError(state.error)
             
             # ========== 阶段2: 生成Agent Profile ==========
+            check_cancel("开始生成 Agent 人设")
             total_entities = len(filtered.entities)
             
             if progress_callback:
@@ -409,7 +422,8 @@ class SimulationManager:
                 graph_id=state.graph_id,  # 传入graph_id用于Zep检索
                 parallel_count=parallel_profile_count,  # 并行生成数量
                 realtime_output_path=realtime_output_path,  # 实时保存路径
-                output_platform=realtime_platform  # 输出格式
+                output_platform=realtime_platform,  # 输出格式
+                task_id=task_id  # 传入task_id用于循环内取消检查
             )
             
             state.profiles_count = len(profiles)
@@ -450,6 +464,7 @@ class SimulationManager:
                 )
             
             # ========== 阶段3: LLM智能生成模拟配置 ==========
+            check_cancel("开始生成模拟配置")
             if progress_callback:
                 progress_callback(
                     "generating_config", 0,
@@ -520,7 +535,8 @@ class SimulationManager:
             import traceback
             logger.error(traceback.format_exc())
             state.status = SimulationStatus.FAILED
-            state.error = str(e)
+            # 取消请求用特殊前缀标记，API 层据此区分
+            state.error = f"CANCELLED:{str(e)}" if isinstance(e, PrepareCancelled) else str(e)
             self._save_simulation_state(state)
             raise
     
