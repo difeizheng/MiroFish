@@ -157,6 +157,38 @@ class TestGetZepClientRouting:
 
 
 # ============================================================
+# 2.5 should_use_local_write 测试（写路径降级策略）
+# ============================================================
+
+class TestShouldUseLocalWrite:
+    def test_graphiti_mode_returns_true(self, monkeypatch):
+        """graphiti 模式写路径走本地 JSONL（读路径走 Neo4j）。"""
+        monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "")
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is True
+
+    def test_zep_mode_no_local_only_returns_false(self, monkeypatch):
+        monkeypatch.setenv("GRAPH_BACKEND", "zep")
+        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "")
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is False
+
+    def test_zep_mode_with_local_only_returns_true(self, monkeypatch):
+        monkeypatch.setenv("GRAPH_BACKEND", "zep")
+        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "1")
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is True
+
+    def test_graphiti_ignores_local_only_flag(self, monkeypatch):
+        """graphiti 模式不管 GRAPH_LOCAL_ONLY 怎么设，写路径都走本地。"""
+        monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "1")
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is True
+
+
+# ============================================================
 # 3. zep_tools._graph_local_only 委托测试
 # ============================================================
 

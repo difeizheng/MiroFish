@@ -41,6 +41,19 @@ def is_graph_local_only() -> bool:
     return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
 
 
+def should_use_local_write() -> bool:
+    """写路径是否走本地 JSONL 降级。
+
+    - GRAPH_LOCAL_ONLY=1 时走本地（Zep 额度耗尽离线模式）
+    - GRAPH_BACKEND=graphiti 时也走本地（写路径暂不接入 graphiti.add_episode，
+      避免 LLM token 消耗；读路径仍走 Neo4j 直查）
+    - 阶段 1B 接入写路径后可移除此函数的 graphiti 分支
+    """
+    if os.environ.get('GRAPH_BACKEND', 'zep') == 'graphiti':
+        return True  # 写路径降级，读路径走 Neo4j
+    return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+
+
 def normalize_zep_search_query(query: Any) -> str:
     """Return a non-empty query within Zep Cloud's endpoint limit."""
 
