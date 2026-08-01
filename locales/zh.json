@@ -153,7 +153,8 @@
       "开始模拟",
       "报告生成",
       "深度互动"
-    ]
+    ],
+    "llmConfig": "LLM 配置"
   },
   "step1": {
     "ontologyGeneration": "本体生成",

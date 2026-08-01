@@ -153,7 +153,8 @@
       "Run Simulation",
       "Report Generation",
       "Deep Interaction"
-    ]
+    ],
+    "llmConfig": "LLM Config"
   },
   "step1": {
     "ontologyGeneration": "Ontology Generation",
