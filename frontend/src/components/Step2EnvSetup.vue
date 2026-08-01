@@ -783,6 +783,7 @@ const handleStopCreate = async () => {
       stopPolling()
       stopProfilesPolling()
       stopConfigPolling()
+      taskId.value = null  // 清空 taskId，避免残留误杀后续新任务
       emit('update-status', 'error')
       phase.value = 0 // 回到初始态，允许重新点「开始创建」
     } else {
@@ -951,6 +952,12 @@ const startPrepareSimulation = async (opts = {}) => {
     emit('update-status', 'error')
     return
   }
+  
+  // 防御性清理：停旧轮询 + 清旧 taskId，避免连续点击造成多轮询/误取消
+  stopPolling()
+  stopProfilesPolling()
+  stopConfigPolling()
+  taskId.value = null
   
   // 标记第一步完成，开始第二步
   phase.value = 1

@@ -824,8 +824,14 @@ def cancel_prepare(simulation_id: str):
         task_id = data.get('task_id')
         tm = TaskManager()
         
-        # 有 task_id 直接收
-        if task_id and tm.request_cancel(task_id):
+        # 必须传 task_id，精准取消（避免误杀同 sim 后续新建的 task）
+        if not task_id:
+            return jsonify({
+                "success": False,
+                "error": "必须提供 task_id"
+            }), 400
+        
+        if tm.request_cancel(task_id):
             logger.info(f"已请求取消 prepare 任务: {task_id} (simulation={simulation_id})")
             return jsonify({
                 "success": True,
@@ -835,27 +841,9 @@ def cancel_prepare(simulation_id: str):
                 }
             })
         
-        # 没 task_id 或 task_id 无效，按 simulation_id 找正在跑的 prepare task
-        if not task_id:
-            tasks = tm.list_tasks(task_type="simulation_prepare")
-            # list_tasks 返回 dict 列表，需要找 metadata.simulation_id 匹配且 status=processing 的
-            for tk in tasks:
-                meta = tk.get('metadata', {})
-                if (meta.get('simulation_id') == simulation_id
-                        and tk.get('status') == 'processing'):
-                    if tm.request_cancel(tk['task_id']):
-                        logger.info(f"按 simulation_id 找到并取消 prepare 任务: {tk['task_id']}")
-                        return jsonify({
-                            "success": True,
-                            "data": {
-                                "status": "cancelling",
-                                "message": "取消请求已发送，后台线程将在下一个检查点终止"
-                            }
-                        })
-        
         return jsonify({
             "success": False,
-            "error": "未找到正在运行的 prepare 任务（可能已完成或已取消）"
+            "error": "任务不存在或已完成（无法取消）"
         }), 404
         
     except Exception as e:
