@@ -299,7 +299,9 @@ class ZepEntityReader:
         self, 
         graph_id: str,
         defined_entity_types: Optional[List[str]] = None,
-        enrich_with_edges: bool = True
+        enrich_with_edges: bool = True,
+        min_degree: Optional[int] = None,
+        max_entities: Optional[int] = None
     ) -> FilteredEntities:
         """
         筛选出符合预定义实体类型的节点
@@ -328,16 +330,18 @@ class ZepEntityReader:
         # 构建节点UUID到节点数据的映射
         node_map = {n["uuid"]: n for n in all_nodes}
         
-        # ===== 本地补丁：质量过滤参数（env 可调）=====
+        # ===== 本地补丁：质量过滤参数（env 可调；调用方可显式覆盖）=====
         import os
-        try:
-            min_degree = max(0, int(os.environ.get('AGENT_MIN_DEGREE', '3')))
-        except ValueError:
-            min_degree = 3
-        try:
-            max_entities = int(os.environ.get('AGENT_MAX_ENTITIES', '150'))
-        except ValueError:
-            max_entities = 150
+        if min_degree is None:
+            try:
+                min_degree = max(0, int(os.environ.get('AGENT_MIN_DEGREE', '3')))
+            except ValueError:
+                min_degree = 3
+        if max_entities is None:
+            try:
+                max_entities = int(os.environ.get('AGENT_MAX_ENTITIES', '150'))
+            except ValueError:
+                max_entities = 150
         extra_deny = {x.strip().lower() for x in os.environ.get('AGENT_EXCLUDE_NAMES', '').split(',') if x.strip()}
         
         # ===== 第一遍：类型过滤，收集候选节点 =====

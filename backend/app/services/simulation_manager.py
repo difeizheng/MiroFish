@@ -296,11 +296,57 @@ class SimulationManager:
             if progress_callback:
                 progress_callback("reading", 30, t('progress.readingNodeData'))
             
-            filtered = reader.filter_defined_entities(
-                graph_id=state.graph_id,
-                defined_entity_types=defined_entity_types,
-                enrich_with_edges=True
-            )
+            # ===== LLM 智能筛选（AGENT_LLM_SELECT，默认开）=====
+            # 开启时先取更大的候选池（目标数 × AGENT_LLM_POOL_MULT，上限 500），
+            # 再结合现实种子 + 模拟需求用 LLM 打分选出目标数量；失败降级为度数截断。
+            from .entity_selector import EntitySelector, llm_select_enabled, load_reality_seed
+            
+            try:
+                target_agents = max(1, int(os.environ.get('AGENT_MAX_ENTITIES', '150')))
+            except ValueError:
+                target_agents = 150
+            
+            if llm_select_enabled():
+                pool_mult = 3
+                try:
+                    pool_mult = max(1, int(os.environ.get('AGENT_LLM_POOL_MULT', '3')))
+                except ValueError:
+                    pass
+                pool_size = min(500, target_agents * pool_mult)
+                
+                filtered = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=defined_entity_types,
+                    enrich_with_edges=True,
+                    max_entities=pool_size
+                )
+                
+                if progress_callback and len(filtered.entities) > target_agents:
+                    progress_callback("reading", 70, f"LLM 智能筛选 Agent: {len(filtered.entities)} 候选 -> 目标 {target_agents}")
+                
+                seed_text = load_reality_seed(state.project_id)
+                selector = EntitySelector()
+                selected, sel_meta = selector.select(
+                    filtered.entities,
+                    target_count=target_agents,
+                    seed_text=seed_text,
+                    requirement=simulation_requirement or "",
+                    graph_id=state.graph_id,
+                )
+                filtered.entities = selected
+                filtered.filtered_count = len(selected)
+                filtered.entity_types = {
+                    next((l for l in (e.labels or []) if l not in ("Entity", "Node")), "实体")
+                    for e in selected
+                }
+                logger.info(f"LLM 智能筛选完成: source={sel_meta.get('source')}, "
+                            f"pool={sel_meta.get('pool_size')}, selected={len(selected)}")
+            else:
+                filtered = reader.filter_defined_entities(
+                    graph_id=state.graph_id,
+                    defined_entity_types=defined_entity_types,
+                    enrich_with_edges=True
+                )
             
             state.entities_count = filtered.filtered_count
             state.entity_types = list(filtered.entity_types)
