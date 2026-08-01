@@ -268,7 +268,11 @@
     "evalRedundant": "冗余角色",
     "evalSuggestions": "调整建议",
     "evalFailed": "评估失败",
-    "rebuildStarted": "开始重建 Agent 阵容（目标 {count} 个）"
+    "rebuildStarted": "开始重建 Agent 阵容（目标 {count} 个）",
+    "createAgents": "开始创建",
+    "stopCreate": "停止创建",
+    "creatingAgents": "创建中…",
+    "stopCreateConfirm": "停止后前端不再轮询，但后端已提交的 Agent 会继续生成完成。确定停止？"
   },
   "step3": {
     "startGenerateReport": "开始生成结果报告",
@@ -662,7 +666,10 @@
     "getReportInfoFailed": "获取报告信息失败: {error}",
     "enterStep": "进入 Step {step}: {name}",
     "returnToStep": "返回 Step {step}: {name}",
-    "customSimRounds": "自定义模拟轮数: {rounds} 轮"
+    "customSimRounds": "自定义模拟轮数: {rounds} 轮",
+    "prepareWaitingForUser": "等待开始创建 Agent（点击下方「开始创建」按钮）",
+    "prepareStarted": "开始创建 Agent…",
+    "prepareStopped": "已停止创建（后端任务将继续跑完，不再轮询进度）"
   },
   "report": {
     "taskStarted": "报告生成任务开始",

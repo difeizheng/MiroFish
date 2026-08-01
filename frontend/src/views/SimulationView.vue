@@ -21,6 +21,7 @@
       </div>
 
       <div class="header-right">
+        <button class="llm-config-btn" @click="showLLMConfig = true" :title="$t('main.llmConfig')">⚙️</button>
         <LanguageSwitcher />
         <div class="step-divider"></div>
         <div class="workflow-step">
@@ -34,6 +35,9 @@
         </span>
       </div>
     </header>
+
+    <!-- LLM 配置面板 -->
+    <LLMConfigPanel :visible="showLLMConfig" @close="showLLMConfig = false" />
 
     <!-- Main Content Area -->
     <main class="content-area">
@@ -73,9 +77,11 @@ import Step2EnvSetup from '../components/Step2EnvSetup.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
 import LanguageSwitcher from '../components/LanguageSwitcher.vue'
+import LLMConfigPanel from '../components/LLMConfigPanel.vue'
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
+const showLLMConfig = ref(false)
 const route = useRoute()
 const router = useRouter()
 
@@ -363,6 +369,24 @@ onMounted(async () => {
   background: #FFF;
   color: #000;
   box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.llm-config-btn {
+  background: none;
+  border: 1px solid #2a2e38;
+  border-radius: 6px;
+  width: 30px;
+  height: 30px;
+  cursor: pointer;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+.llm-config-btn:hover {
+  background: #2a2e38;
+  border-color: #4fc3f7;
 }
 
 .header-right {

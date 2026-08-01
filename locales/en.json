@@ -268,7 +268,11 @@
     "evalRedundant": "Redundant Roles",
     "evalSuggestions": "Suggestions",
     "evalFailed": "Evaluation failed",
-    "rebuildStarted": "Rebuilding agent roster (target {count})"
+    "rebuildStarted": "Rebuilding agent roster (target {count})",
+    "createAgents": "Start Creating",
+    "stopCreate": "Stop Creating",
+    "creatingAgents": "Creating…",
+    "stopCreateConfirm": "After stopping, the frontend stops polling, but already-submitted agents will still finish in the backend. Continue?"
   },
   "step3": {
     "startGenerateReport": "Generate Report",
@@ -662,7 +666,10 @@
     "getReportInfoFailed": "Failed to get report info: {error}",
     "enterStep": "Entering Step {step}: {name}",
     "returnToStep": "Returning to Step {step}: {name}",
-    "customSimRounds": "Custom simulation rounds: {rounds} rounds"
+    "customSimRounds": "Custom simulation rounds: {rounds} rounds",
+    "prepareWaitingForUser": "Waiting to create agents (click \"Start Creating\" below)",
+    "prepareStarted": "Started creating agents…",
+    "prepareStopped": "Creation polling stopped (backend task will continue to finish)"
   },
   "report": {
     "taskStarted": "Report generation task started",

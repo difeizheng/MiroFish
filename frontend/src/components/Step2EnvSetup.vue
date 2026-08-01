@@ -61,6 +61,21 @@
             {{ $t('step2.generateAgentPersonaDesc') }}
           </p>
 
+          <!-- 创建控制按钮：手动开始/停止创建 Agent -->
+          <div class="create-agents-control">
+            <button
+              v-if="phase === 0"
+              class="action-btn primary"
+              @click="handleStartCreate"
+            >{{ $t('step2.createAgents') }}</button>
+            <button
+              v-if="phase === 1"
+              class="action-btn danger"
+              :disabled="stoppingCreate"
+              @click="handleStopCreate"
+            >{{ stoppingCreate ? $t('step2.creatingAgents') : $t('step2.stopCreate') }}</button>
+          </div>
+
           <!-- Profiles Stats -->
           <div v-if="profiles.length > 0" class="stats-grid">
             <div class="stat-card">
@@ -748,6 +763,24 @@ const evaluating = ref(false)
 const evalResult = ref(null)
 const evalError = ref('')
 const rebuilding = ref(false)
+const stoppingCreate = ref(false) // 前端“停止创建”状态标记
+
+// 手动开始创建 Agent
+const handleStartCreate = () => {
+  startPrepareSimulation()
+}
+
+// 手动停止创建 Agent（方案 A：仅停止前端轮询，后端任务继续跑完）
+const handleStopCreate = () => {
+  if (!window.confirm(t('step2.stopCreateConfirm'))) return
+  stoppingCreate.value = true
+  stopPolling()
+  stopProfilesPolling()
+  stopConfigPolling()
+  addLog(t('log.prepareStopped'))
+  emit('update-status', 'error')
+  phase.value = 0 // 回到初始态，允许重新点「开始创建」
+}
 
 watch(expectedTotal, (v) => {
   if (agentCountInput.value == null && v) agentCountInput.value = v
@@ -1212,10 +1245,10 @@ watch(() => props.systemLogs?.length, () => {
 })
 
 onMounted(() => {
-  // 自动开始准备流程
+  // 进入 Step2 不自动创建 Agent，等待用户点击「开始创建」按钮
   if (props.simulationId) {
     addLog(t('log.step2Init'))
-    startPrepareSimulation()
+    addLog(t('log.prepareWaitingForUser'))
   }
 })
 
@@ -1347,6 +1380,21 @@ onUnmounted(() => {
 
 .action-btn.primary:hover:not(:disabled) {
   opacity: 0.8;
+}
+
+.action-btn.danger {
+  background: #d32f2f;
+  color: #FFF;
+}
+
+.action-btn.danger:hover:not(:disabled) {
+  background: #b71c1c;
+}
+
+.create-agents-control {
+  display: flex;
+  gap: 12px;
+  margin: 16px 0;
 }
 
 .action-btn.secondary {
