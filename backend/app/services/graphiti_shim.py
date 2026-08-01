@@ -129,16 +129,21 @@ class NotFoundError(Exception):
 # ============================================================
 
 class _RawResponse:
-    """模拟 httpx.Response，zep_paging 取 .content 属性。"""
+    """模拟 httpx.Response。
 
-    def __init__(self, data: Any):
-        self._data = data
-        self.content = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+    zep_paging.py 取 .data（节点/边列表）+ .headers（分页 cursor）。
+    """
+
+    def __init__(self, items: list[Any]):
+        # .data 直接是列表（Zep SDK with_raw_response 的 data 属性格式）
+        self.data = items
+        self.content = json.dumps(items, ensure_ascii=False, default=str).encode("utf-8")
         self.status_code = 200
+        # 不提供 next_cursor，让 zep_paging._fetch_all 在第一页就结束
         self.headers = {}
 
     def json(self) -> Any:
-        return self._data
+        return self.data
 
 
 class _WithRawResponseNode:
@@ -149,14 +154,14 @@ class _WithRawResponseNode:
         self._database = database
 
     def get_by_graph_id(self, graph_id: str, **kwargs) -> _RawResponse:
-        """全量读取一个 group 的所有 Entity 节点，返回 Zep 分页结构。
+        """全量读取一个 group 的所有 Entity 节点。
 
-        Zep 分页结构：{"nodes": [...], "total_pages": N}
-        zep_paging.py 的 _fetch_all 会翻页直到无 next_cursor。
-        shim 一次性返回全部（MiroFish 在数千节点量级，内存可接受）。
+        zep_paging.py 的 _fetch_all 读 response.data（期望列表），
+        无 next_cursor 时单页结束。元素为 SimpleNamespace 模拟 Zep SDK Node 对象。
         """
-        nodes = _query_all_nodes(self._driver, self._database, graph_id)
-        return _RawResponse({"nodes": nodes, "total_pages": 1})
+        node_dicts = _query_all_nodes(self._driver, self._database, graph_id)
+        nodes = [_make_node(**d) for d in node_dicts]
+        return _RawResponse(nodes)
 
 
 class _WithRawResponseEdge:
@@ -167,8 +172,9 @@ class _WithRawResponseEdge:
         self._database = database
 
     def get_by_graph_id(self, graph_id: str, **kwargs) -> _RawResponse:
-        edges = _query_all_edges(self._driver, self._database, graph_id)
-        return _RawResponse({"edges": edges, "total_pages": 1})
+        edge_dicts = _query_all_edges(self._driver, self._database, graph_id)
+        edges = [_make_edge(**d) for d in edge_dicts]
+        return _RawResponse(edges)
 
 
 # ============================================================

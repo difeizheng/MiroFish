@@ -37,6 +37,9 @@ dependencies = [
     # 显式声明 torch（camel-ai 的传递依赖）：uv 的源钉版只对直接依赖生效，
     # 声明后 Linux 下解析为 CPU 版（见文末 tool.uv.sources），避免 ~6.6GB CUDA 死重
     "torch>=2.0",
+
+    # Graphiti 后端：neo4j Python driver（graphiti-core 间接依赖，显式声明保证可用）
+    "neo4j>=5.20",
 ]
 
 [project.optional-dependencies]

@@ -159,21 +159,26 @@ class TestMakeEpisode:
 # ============================================================
 
 class TestRawResponse:
+    def test_data_is_list(self):
+        raw = _shim._RawResponse([{"a": 1}])
+        assert isinstance(raw.data, list)
+        assert raw.data == [{"a": 1}]
+
     def test_content_is_bytes(self):
-        raw = _shim._RawResponse({"a": 1})
+        raw = _shim._RawResponse([{"a": 1}])
         assert isinstance(raw.content, bytes)
 
     def test_content_is_utf8_json(self):
-        raw = _shim._RawResponse({"name": "中文"})
+        raw = _shim._RawResponse([{"name": "中文"}])
         decoded = json.loads(raw.content.decode("utf-8"))
-        assert decoded == {"name": "中文"}
+        assert decoded == [{"name": "中文"}]
 
     def test_json_roundtrip(self):
         raw = _shim._RawResponse([1, 2, 3])
         assert raw.json() == [1, 2, 3]
 
     def test_status_code(self):
-        assert _shim._RawResponse({}).status_code == 200
+        assert _shim._RawResponse([]).status_code == 200
 
 
 # ============================================================
@@ -397,9 +402,10 @@ class TestNodeAPI:
         node_api = _shim._NodeAPI(driver, "neo4j")
         raw = node_api.with_raw_response.get_by_graph_id(graph_id="g1")
         assert isinstance(raw, _shim._RawResponse)
-        data = raw.json()
-        assert "nodes" in data
-        assert len(data["nodes"]) == 1
+        # data 是节点列表（每个元素是 SimpleNamespace 模拟 Zep Node）
+        assert isinstance(raw.data, list)
+        assert len(raw.data) == 1
+        assert raw.data[0].name == "A"
 
 
 # ============================================================
@@ -438,9 +444,9 @@ class TestEdgeAPI:
         })
         edge_api = _shim._EdgeAPI(driver, "neo4j")
         raw = edge_api.with_raw_response.get_by_graph_id(graph_id="g1")
-        data = raw.json()
-        assert "edges" in data
-        assert len(data["edges"]) == 1
+        assert isinstance(raw.data, list)
+        assert len(raw.data) == 1
+        assert raw.data[0].fact == "f"
 
 
 # ============================================================
