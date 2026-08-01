@@ -368,13 +368,15 @@ class SimulationRunner:
         cls._run_states[state.simulation_id] = state
     
     @classmethod
+    @classmethod
     def start_simulation(
         cls,
         simulation_id: str,
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
         enable_graph_memory_update: bool = False,  # 是否将活动更新到Zep图谱
-        graph_id: str = None  # Zep图谱ID（启用图谱更新时必需）
+        graph_id: str = None,  # Zep图谱ID（启用图谱更新时必需）
+        wait_for_commands: bool = False,  # 模拟完成后是否进入等待命令模式（默认不等待，跑完即退出）
     ) -> SimulationRunState:
         """
         启动模拟
@@ -385,6 +387,7 @@ class SimulationRunner:
             max_rounds: 最大模拟轮数（可选，用于截断过长的模拟）
             enable_graph_memory_update: 是否将Agent活动动态更新到Zep图谱
             graph_id: Zep图谱ID（启用图谱更新时必需）
+            wait_for_commands: 模拟完成后是否进入等待命令模式（默认False，跑完即退出）
             
         Returns:
             SimulationRunState
@@ -523,6 +526,10 @@ class SimulationRunner:
             # 如果指定了最大轮数，添加到命令行参数
             if max_rounds is not None and max_rounds > 0:
                 cmd.extend(["--max-rounds", str(max_rounds)])
+            
+            # 默认不进入等待命令模式（跑完即退出），除非显式要求
+            if not wait_for_commands:
+                cmd.append("--no-wait")
             
             # 创建主日志文件，避免 stdout/stderr 管道缓冲区满导致进程阻塞
             main_log_path = os.path.join(sim_dir, "simulation.log")
