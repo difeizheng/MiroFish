@@ -69,7 +69,14 @@
     "Mention": "Mention",
     "Reaction": "Reaction",
     "Stance": "Stance",
-    "Viewpoint": "Viewpoint"
+    "Viewpoint": "Viewpoint",
+    "Executive": "Executive",
+    "SemiconductorCompany": "Semiconductor Company",
+    "Investor": "Investor",
+    "GovernmentAgency": "Government Agency",
+    "IndustryAssociation": "Industry Association",
+    "SecuritiesFirm": "Securities Firm",
+    "Analyst": "Analyst"
   },
   "common": {
     "confirm": "Confirm",

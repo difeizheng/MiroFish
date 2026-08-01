@@ -69,7 +69,14 @@
     "Mention": "提及",
     "Reaction": "反应",
     "Stance": "立场",
-    "Viewpoint": "立场观点"
+    "Viewpoint": "立场观点",
+    "Executive": "高管",
+    "SemiconductorCompany": "半导体公司",
+    "Investor": "投资方",
+    "GovernmentAgency": "政府机构",
+    "IndustryAssociation": "行业协会",
+    "SecuritiesFirm": "券商",
+    "Analyst": "分析师"
   },
   "common": {
     "confirm": "确认",
