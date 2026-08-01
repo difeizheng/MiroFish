@@ -1,4 +1,26 @@
 services:
+  neo4j:
+    # Graphiti 后端图谱数据库（方案 D：用 Neo4j 替换 Zep Cloud）
+    # 仅在 GRAPH_BACKEND=graphiti 时使用；GRAPH_BACKEND=zep 时此容器可停
+    image: neo4j:5.26-community
+    container_name: mirofish-neo4j
+    ports:
+      - "7474:7474"   # Browser UI
+      - "7687:7687"   # Bolt
+    environment:
+      - NEO4J_AUTH=${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-testpass}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_server_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
   mirofish:
     # 本地自建镜像（源码构建，含全部本地补丁 + CPU torch，1.8GB vs 官方 8.9GB）
     # 构建：docker build -t mirofish:local .
@@ -16,6 +38,10 @@ services:
       - "3020:3000"
       - "5001:5001"
     restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy
+        required: false   # GRAPH_BACKEND=zep 时不要求 neo4j 就绪
     volumes:
       - ./backend/uploads:/app/backend/uploads
       # 挂载 .env 使 config_api 热更新能持久化到宿主机（容器内无 .env，env_file 只注入环境变量）
@@ -24,3 +50,6 @@ services:
       - ./backend/hf-cache:/root/.cache/huggingface
       # 注意：docker-patches/ 的单文件挂载已全部移除——所有补丁已回填本地源码并打入
       # mirofish:local 镜像（docker-patches/ 仅作历史留档，见其 README）。
+
+volumes:
+  neo4j_data:

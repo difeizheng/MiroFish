@@ -17,6 +17,7 @@ from ..utils.zep import (
     ZEP_INGESTION_WAIT_TIMEOUT_SECONDS,
     call_zep_read_with_retry,
     get_zep_client,
+    is_graph_local_only,
 )
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
@@ -491,8 +492,7 @@ class ZepGraphMemoryUpdater:
             if deadline is not None and time.time() >= deadline:
                 raise _DrainDeadlineExceeded(processed_count)
             # 本地补丁：GRAPH_LOCAL_ONLY 时跳过 Zep，直接写本地 JSONL（Zep 额度耗尽离线模式）
-            import os
-            if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+            if is_graph_local_only():
                 self._write_local_memory(combined_text, platform, len(payload_activities))
                 processed_count += len(payload_activities)
                 continue

@@ -865,7 +865,8 @@ class GraphBuilderService:
             包含nodes和edges的字典，包括时间信息、属性等详细数据
         """
         import os as _os
-        local_only = _os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+        from ..utils.zep import is_graph_local_only
+        local_only = is_graph_local_only()
         if not force_refresh:
             cached = self.read_graph_cache(graph_id)
             if cached is not None:

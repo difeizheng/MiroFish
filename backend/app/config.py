@@ -13,10 +13,10 @@ from dotenv import load_dotenv, dotenv_values
 project_root_env = os.path.join(os.path.dirname(__file__), '../../.env')
 
 if os.path.exists(project_root_env):
-    load_dotenv(project_root_env, override=True)
+    load_dotenv(project_root_env, override=False)
 else:
     # 如果根目录没有 .env，尝试加载环境变量（用于生产环境）
-    load_dotenv(override=True)
+    load_dotenv(override=False)
 
 
 # ---------- LLM 参数热更新支持 ----------
@@ -132,6 +132,14 @@ class Config(metaclass=_ConfigMeta):
     # Zep配置
     ZEP_API_KEY = os.environ.get('ZEP_API_KEY')
 
+    # Graphiti 后端配置（方案 D：用 Neo4j 替换 Zep）
+    # GRAPH_BACKEND: 'zep'（默认，走 Zep Cloud）或 'graphiti'（走本地 Neo4j）
+    GRAPH_BACKEND = os.environ.get('GRAPH_BACKEND', 'zep')
+    NEO4J_URI = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
+    NEO4J_USER = os.environ.get('NEO4J_USER', 'neo4j')
+    NEO4J_PASSWORD = os.environ.get('NEO4J_PASSWORD', '')
+    NEO4J_DATABASE = os.environ.get('NEO4J_DATABASE', 'neo4j')
+
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')
@@ -166,10 +174,15 @@ class Config(metaclass=_ConfigMeta):
         errors: list[str] = []
         if not _get_llm_config("LLM_API_KEY"):
             errors.append("LLM_API_KEY 未配置")
-        if not cls.ZEP_API_KEY:
-            errors.append("ZEP_API_KEY 未配置")
-        if os.environ.get("ZEP_API_URL"):
-            errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
+        # ZEP_API_KEY 仅在 GRAPH_BACKEND=zep 时必须
+        if cls.GRAPH_BACKEND == 'zep':
+            if not cls.ZEP_API_KEY:
+                errors.append("ZEP_API_KEY 未配置（或设置 GRAPH_BACKEND=graphiti 切换到 Neo4j 后端）")
+            if os.environ.get("ZEP_API_URL"):
+                errors.append("ZEP_API_URL 不受支持；MiroFish 仅连接 Zep Cloud")
+        elif cls.GRAPH_BACKEND == 'graphiti':
+            if not cls.NEO4J_PASSWORD:
+                errors.append("NEO4J_PASSWORD 未配置（GRAPH_BACKEND=graphiti 需要）")
         if cls.DEBUG:
             import warnings
             warnings.warn("Flask DEBUG mode is enabled. Do not use in production.", RuntimeWarning)

@@ -24,6 +24,7 @@ from ..utils.openai_chat_compat import create_chat_completion, extract_chat_comp
 from ..utils.zep import (
     call_zep_read_with_retry,
     get_zep_client,
+    is_graph_local_only,
     is_retryable_zep_error,
     normalize_zep_search_query,
 )
@@ -362,7 +363,7 @@ class OasisProfileGenerator:
         import concurrent.futures
         
         # 本地补丁：GRAPH_LOCAL_ONLY 离线模式直接走本地图谱缓存，不碰 Zep
-        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+        if is_graph_local_only():
             return self._search_local_cache_for_entity(entity)
         
         if not self.zep_client:

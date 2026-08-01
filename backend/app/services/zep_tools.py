@@ -31,8 +31,8 @@ logger = get_logger('mirofish.zep_tools')
 
 # ===== 本地补丁：Zep 额度耗尽时的本地缓存降级 =====
 def _graph_local_only() -> bool:
-    import os
-    return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+    from ..utils.zep import is_graph_local_only
+    return is_graph_local_only()
 
 
 def _load_graph_cache(graph_id: str):

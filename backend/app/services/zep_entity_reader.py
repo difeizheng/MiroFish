@@ -10,7 +10,7 @@ from zep_cloud import NotFoundError
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.zep_paging import fetch_all_nodes, fetch_all_edges
-from ..utils.zep import call_zep_read_with_retry, get_zep_client
+from ..utils.zep import call_zep_read_with_retry, get_zep_client, is_graph_local_only
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -123,8 +123,7 @@ class ZepEntityReader:
         logger.info(f"获取图谱 {graph_id} 的所有节点...")
 
         # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地图谱缓存读取（Zep 额度耗尽离线模式）
-        import os
-        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+        if is_graph_local_only():
             cached = self._read_graph_cache_data(graph_id)
             if cached is not None:
                 logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(cached.get('nodes', []))} 个节点")
@@ -166,8 +165,7 @@ class ZepEntityReader:
         logger.info(f"获取图谱 {graph_id} 的所有边...")
 
         # 本地补丁：GRAPH_LOCAL_ONLY 或 Zep 失败时从本地图谱缓存读取
-        import os
-        if os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes'):
+        if is_graph_local_only():
             cached = self._read_graph_cache_data(graph_id)
             if cached is not None:
                 logger.info(f"GRAPH_LOCAL_ONLY: 从本地缓存读取 {len(cached.get('edges', []))} 条边")

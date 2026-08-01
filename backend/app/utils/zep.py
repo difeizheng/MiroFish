@@ -30,6 +30,17 @@ MAX_ZEP_SEARCH_QUERY_CHARS = 400
 MAX_ZEP_SEARCH_RESULTS = 50
 
 
+def is_graph_local_only() -> bool:
+    """GRAPH_LOCAL_ONLY 离线模式检查（统一入口）。
+
+    GRAPH_BACKEND=graphiti 时自动返回 False（读路径走 shim 直连 Neo4j，不走本地 JSON 降级）。
+    直接读 os.environ 而非 Config.GRAPH_BACKEND，避免模块加载快照导致测试需要 reload。
+    """
+    if os.environ.get('GRAPH_BACKEND', 'zep') == 'graphiti':
+        return False
+    return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
+
+
 def normalize_zep_search_query(query: Any) -> str:
     """Return a non-empty query within Zep Cloud's endpoint limit."""
 
@@ -62,16 +73,34 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
     )
 
 
-def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> Zep:
-    """Return a process-shared, explicitly configured Zep Cloud client."""
+@lru_cache(maxsize=4)
+def _cached_graphiti_shim(uri: str, user: str, password: str, database: str):
+    """缓存 GraphitiShimClient 实例（方案 D）。"""
+    # 延迟导入：仅在启用 graphiti 后端时才加载 neo4j driver
+    from ..services.graphiti_shim import GraphitiShimClient
+    return GraphitiShimClient(uri, user, password, database=database)
 
+
+def get_zep_client(api_key: str | None = None, timeout: float | None = None):
+    """Return a process-shared graph client.
+
+    根据 Config.GRAPH_BACKEND 返回：
+    - 'zep'（默认）: Zep Cloud 客户端
+    - 'graphiti': GraphitiShimClient（直连 Neo4j，鸭子类型兼容 Zep SDK）
+    """
+    backend = os.environ.get('GRAPH_BACKEND', 'zep')
+
+    if backend == 'graphiti':
+        return _get_graphiti_client()
+
+    # --- Zep Cloud 路径 ---
     # zep-cloud gives ZEP_API_URL precedence even when base_url is explicit.
     # Reject it so this Cloud-only integration cannot silently target a
     # self-hosted or compatibility endpoint.
     if os.environ.get("ZEP_API_URL"):
         raise ValueError("ZEP_API_URL is unsupported; unset it to use Zep Cloud")
 
-    normalized_key = (api_key or Config.ZEP_API_KEY or "").strip()
+    normalized_key = (api_key or os.environ.get('ZEP_API_KEY', '') or "").strip()
     if not normalized_key:
         raise ValueError("ZEP_API_KEY 未配置")
 
@@ -83,10 +112,22 @@ def get_zep_client(api_key: str | None = None, timeout: float | None = None) -> 
     return _cached_zep_client(normalized_key, request_timeout)
 
 
+def _get_graphiti_client():
+    """构造 GraphitiShimClient（方案 D）。"""
+    uri = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
+    user = os.environ.get('NEO4J_USER', 'neo4j')
+    password = os.environ.get('NEO4J_PASSWORD', '')
+    database = os.environ.get('NEO4J_DATABASE', 'neo4j')
+    if not password:
+        raise ValueError("NEO4J_PASSWORD 未配置（GRAPH_BACKEND=graphiti 需要）")
+    return _cached_graphiti_shim(uri, user, password, database)
+
+
 def clear_zep_client_cache() -> None:
     """Clear cached clients. Intended for tests and controlled reconfiguration."""
 
     _cached_zep_client.cache_clear()
+    _cached_graphiti_shim.cache_clear()
 
 
 def is_retryable_zep_error(error: BaseException) -> bool:
