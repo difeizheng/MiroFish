@@ -77,6 +77,71 @@
             </div>
           </div>
 
+          <!-- Agent 阵容控制：数量 + LLM 评估 + 重建 -->
+          <div v-if="profiles.length > 0 || phase >= 2" class="roster-control">
+            <div class="roster-control-header">
+              <span class="roster-control-title">{{ $t('step2.agentRosterControl') }}</span>
+            </div>
+            <div class="roster-control-row">
+              <label class="roster-count-label">
+                {{ $t('step2.agentCountLabel') }}
+                <input
+                  type="number"
+                  v-model.number="agentCountInput"
+                  min="10" max="500" step="10"
+                  class="roster-count-input"
+                  :disabled="rebuilding || phase === 1"
+                />
+              </label>
+              <button
+                class="roster-btn secondary"
+                :disabled="evaluating || rebuilding || phase === 1 || profiles.length === 0"
+                @click="evaluateRoster"
+              >{{ evaluating ? $t('step2.evaluating') : $t('step2.evaluateRoster') }}</button>
+              <button
+                class="roster-btn primary"
+                :disabled="evaluating || rebuilding || phase === 1"
+                @click="rebuildRoster"
+              >{{ rebuilding ? $t('step2.rebuilding') : $t('step2.rebuildRoster') }}</button>
+            </div>
+            <p class="roster-tip">{{ $t('step2.agentCountTip') }}</p>
+
+            <!-- 评估结果 -->
+            <div v-if="evalError" class="eval-result eval-error">{{ $t('step2.evalFailed') }}: {{ evalError }}</div>
+            <div v-if="evalResult" class="eval-result">
+              <div class="eval-header">
+                <span class="eval-score" :class="evalResult.overall_score >= 75 ? 'good' : evalResult.overall_score >= 50 ? 'mid' : 'bad'">
+                  {{ evalResult.overall_score }}
+                </span>
+                <div class="eval-header-text">
+                  <span class="eval-score-label">{{ $t('step2.evalOverallScore') }}</span>
+                  <p class="eval-summary">{{ evalResult.summary }}</p>
+                </div>
+              </div>
+              <div v-if="evalResult.dimensions?.length" class="eval-section">
+                <span class="eval-section-title">{{ $t('step2.evalDimensions') }}</span>
+                <div v-for="dim in evalResult.dimensions" :key="dim.name" class="eval-dim">
+                  <span class="eval-dim-name">{{ dim.name }}</span>
+                  <span class="eval-dim-bar"><span class="eval-dim-fill" :style="{ width: (dim.score * 10) + '%' }"></span></span>
+                  <span class="eval-dim-score">{{ dim.score }}/10</span>
+                  <p class="eval-dim-comment">{{ dim.comment }}</p>
+                </div>
+              </div>
+              <div v-if="evalResult.missing_roles?.length" class="eval-section">
+                <span class="eval-section-title">{{ $t('step2.evalMissing') }}</span>
+                <div class="eval-tags"><span v-for="r in evalResult.missing_roles" :key="r" class="eval-tag missing">{{ r }}</span></div>
+              </div>
+              <div v-if="evalResult.redundant?.length" class="eval-section">
+                <span class="eval-section-title">{{ $t('step2.evalRedundant') }}</span>
+                <div class="eval-tags"><span v-for="r in evalResult.redundant" :key="r" class="eval-tag redundant">{{ r }}</span></div>
+              </div>
+              <div v-if="evalResult.suggestions?.length" class="eval-section">
+                <span class="eval-section-title">{{ $t('step2.evalSuggestions') }}</span>
+                <ul class="eval-suggestions"><li v-for="s in evalResult.suggestions" :key="s">{{ s }}</li></ul>
+              </div>
+            </div>
+          </div>
+
           <!-- Profiles List Preview -->
           <div v-if="profiles.length > 0" class="profiles-preview">
             <div class="preview-header">
@@ -640,7 +705,8 @@ import {
   getPrepareStatus,
   getSimulationProfilesRealtime,
   getSimulationConfig,
-  getSimulationConfigRealtime
+  getSimulationConfigRealtime,
+  evaluateAgents
 } from '../api/simulation'
 
 const { t } = useI18n()
@@ -675,6 +741,17 @@ let lastLoggedConfigStage = ''
 // 模拟轮数配置
 const useCustomRounds = ref(false) // 默认使用自动配置轮数
 const customMaxRounds = ref(40)   // 默认推荐40轮
+
+// Agent 阵容控制（阶段3）
+const agentCountInput = ref(null)  // null -> 跟随 expectedTotal/env
+const evaluating = ref(false)
+const evalResult = ref(null)
+const evalError = ref('')
+const rebuilding = ref(false)
+
+watch(expectedTotal, (v) => {
+  if (agentCountInput.value == null && v) agentCountInput.value = v
+})
 
 // Watch stage to update phase
 watch(currentStage, (newStage) => {
@@ -766,6 +843,50 @@ const handleStartSimulation = () => {
   emit('next-step', params)
 }
 
+// LLM 评估当前 Agent 阵容
+const evaluateRoster = async () => {
+  if (evaluating.value) return
+  evaluating.value = true
+  evalError.value = ''
+  evalResult.value = null
+  addLog('开始 LLM 评估 Agent 阵容...')
+  try {
+    const res = await evaluateAgents(props.simulationId)
+    if (res.success && res.data) {
+      evalResult.value = res.data
+      addLog(`阵容评估完成：综合 ${res.data.overall_score} 分 — ${res.data.summary || ''}`)
+    } else {
+      evalError.value = res.error || t('common.unknownError')
+      addLog(`阵容评估失败：${evalError.value}`)
+    }
+  } catch (err) {
+    evalError.value = err.message
+    addLog(`阵容评估异常：${err.message}`)
+  } finally {
+    evaluating.value = false
+  }
+}
+
+// 重建 Agent 阵容（按新数量重新筛选 + 重新生成人设与配置）
+const rebuildRoster = async () => {
+  if (rebuilding.value) return
+  const count = agentCountInput.value || expectedTotal.value || 150
+  if (!window.confirm(t('step2.rebuildConfirm'))) return
+  rebuilding.value = true
+  evalResult.value = null
+  evalError.value = ''
+  // 重置已生成内容，重新走完整 prepare 流程
+  profiles.value = []
+  simulationConfig.value = null
+  lastLoggedProfileCount = 0
+  addLog(t('step2.rebuildStarted', { count }))
+  try {
+    await startPrepareSimulation({ force: true, agentCount: count })
+  } finally {
+    rebuilding.value = false
+  }
+}
+
 const truncateBio = (bio) => {
   if (bio.length > 80) {
     return bio.substring(0, 80) + '...'
@@ -777,8 +898,8 @@ const selectProfile = (profile) => {
   selectedProfile.value = profile
 }
 
-// 自动开始准备模拟
-const startPrepareSimulation = async () => {
+// 自动开始准备模拟（opts: { force?, agentCount? }，重建时传入）
+const startPrepareSimulation = async (opts = {}) => {
   if (!props.simulationId) {
     addLog(t('log.errorMissingSimId'))
     emit('update-status', 'error')
@@ -792,11 +913,14 @@ const startPrepareSimulation = async () => {
   emit('update-status', 'processing')
   
   try {
-    const res = await prepareSimulation({
+    const reqBody = {
       simulation_id: props.simulationId,
       use_llm_for_profiles: true,
       parallel_profile_count: 5
-    })
+    }
+    if (opts.force) reqBody.force_regenerate = true
+    if (opts.agentCount) reqBody.agent_count = opts.agentCount
+    const res = await prepareSimulation(reqBody)
     
     if (res.success && res.data) {
       if (res.data.already_prepared) {
@@ -1317,6 +1441,168 @@ onUnmounted(() => {
   text-transform: uppercase;
   margin-top: 4px;
   display: block;
+}
+
+/* Roster Control (阶段3) */
+.roster-control {
+  margin-top: 12px;
+  background: #F9F9F9;
+  border: 1px solid #EAEAEA;
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.roster-control-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.roster-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.roster-count-label {
+  font-size: 12px;
+  color: #666;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.roster-count-input {
+  width: 80px;
+  padding: 6px 8px;
+  border: 1px solid #DDD;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.roster-btn {
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.roster-btn.primary { background: #000; color: #FFF; }
+.roster-btn.secondary { background: #E5E5E5; color: #333; }
+.roster-btn:hover:not(:disabled) { opacity: 0.8; }
+.roster-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.roster-tip {
+  font-size: 10px;
+  color: #999;
+  margin-top: 8px;
+}
+
+.eval-result {
+  margin-top: 12px;
+  background: #FFF;
+  border: 1px solid #EAEAEA;
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.eval-error { color: #C62828; font-size: 12px; }
+
+.eval-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.eval-score {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 28px;
+  font-weight: 700;
+}
+.eval-score.good { color: #2E7D32; }
+.eval-score.mid { color: #F57C00; }
+.eval-score.bad { color: #C62828; }
+
+.eval-score-label {
+  font-size: 10px;
+  color: #999;
+  text-transform: uppercase;
+}
+
+.eval-summary {
+  font-size: 12px;
+  color: #333;
+  margin-top: 2px;
+}
+
+.eval-section { margin-top: 12px; }
+
+.eval-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #666;
+  display: block;
+  margin-bottom: 6px;
+}
+
+.eval-dim {
+  display: grid;
+  grid-template-columns: 110px 1fr 44px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.eval-dim-name { font-size: 11px; color: #333; }
+
+.eval-dim-bar {
+  height: 6px;
+  background: #EEE;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.eval-dim-fill {
+  display: block;
+  height: 100%;
+  background: #FF5722;
+  border-radius: 3px;
+}
+
+.eval-dim-score {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: #666;
+}
+
+.eval-dim-comment {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: #888;
+  margin: -2px 0 4px;
+}
+
+.eval-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.eval-tag {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+.eval-tag.missing { background: #FFF3E0; color: #E65100; }
+.eval-tag.redundant { background: #FFEBEE; color: #C62828; }
+
+.eval-suggestions {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #444;
+  line-height: 1.7;
 }
 
 /* Profiles Preview */

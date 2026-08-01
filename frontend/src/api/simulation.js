@@ -17,6 +17,15 @@ export const prepareSimulation = (data) => {
 }
 
 /**
+ * LLM 评估当前 Agent 阵容质量
+ * @param {string} simulationId - 模拟ID
+ */
+export const evaluateAgents = (simulationId) => {
+  // 走同源 vite proxy（不继承写死的 localhost:5001 baseURL，Docker 下更稳）
+  return service.post(`/api/simulation/${simulationId}/evaluate-agents`, {}, { baseURL: window.location.origin })
+}
+
+/**
  * 查询准备任务进度
  * @param {Object} data - { task_id?, simulation_id? }
  */

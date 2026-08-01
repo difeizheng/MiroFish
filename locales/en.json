@@ -147,7 +147,13 @@
     "layoutGraph": "Graph",
     "layoutSplit": "Split",
     "layoutWorkbench": "Workbench",
-    "stepNames": ["Graph Build", "Env Setup", "Run Simulation", "Report Generation", "Deep Interaction"]
+    "stepNames": [
+      "Graph Build",
+      "Env Setup",
+      "Run Simulation",
+      "Report Generation",
+      "Deep Interaction"
+    ]
   },
   "step1": {
     "ontologyGeneration": "Ontology Generation",
@@ -246,7 +252,22 @@
     "genderOther": "Other",
     "yearsOld": "years old",
     "initializing": "Initializing",
-    "generating": "Generating"
+    "generating": "Generating",
+    "agentRosterControl": "Agent Roster Control",
+    "agentCountLabel": "Agent Count",
+    "agentCountTip": "Click 'Rebuild' after changing (10-500). LLM will re-select based on the reality seed",
+    "evaluateRoster": "Evaluate Roster (LLM)",
+    "evaluating": "Evaluating...",
+    "rebuildRoster": "Rebuild Roster",
+    "rebuilding": "Rebuilding...",
+    "rebuildConfirm": "This will re-select agents with the new count and regenerate all personas and config, overwriting current content. Continue?",
+    "evalOverallScore": "Overall Score",
+    "evalDimensions": "Dimension Scores",
+    "evalMissing": "Missing Roles",
+    "evalRedundant": "Redundant Roles",
+    "evalSuggestions": "Suggestions",
+    "evalFailed": "Evaluation failed",
+    "rebuildStarted": "Rebuilding agent roster (target {count})"
   },
   "step3": {
     "startGenerateReport": "Generate Report",

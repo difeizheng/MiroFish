@@ -249,7 +249,8 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 3,
+        agent_count: Optional[int] = None
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -302,7 +303,7 @@ class SimulationManager:
             from .entity_selector import EntitySelector, llm_select_enabled, load_reality_seed
             
             try:
-                target_agents = max(1, int(os.environ.get('AGENT_MAX_ENTITIES', '150')))
+                target_agents = agent_count or max(1, int(os.environ.get('AGENT_MAX_ENTITIES', '150')))
             except ValueError:
                 target_agents = 150
             
@@ -345,7 +346,8 @@ class SimulationManager:
                 filtered = reader.filter_defined_entities(
                     graph_id=state.graph_id,
                     defined_entity_types=defined_entity_types,
-                    enrich_with_edges=True
+                    enrich_with_edges=True,
+                    max_entities=target_agents
                 )
             
             state.entities_count = filtered.filtered_count

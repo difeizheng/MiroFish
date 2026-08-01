@@ -147,7 +147,13 @@
     "layoutGraph": "图谱",
     "layoutSplit": "双栏",
     "layoutWorkbench": "工作台",
-    "stepNames": ["图谱构建", "环境搭建", "开始模拟", "报告生成", "深度互动"]
+    "stepNames": [
+      "图谱构建",
+      "环境搭建",
+      "开始模拟",
+      "报告生成",
+      "深度互动"
+    ]
   },
   "step1": {
     "ontologyGeneration": "本体生成",
@@ -246,7 +252,22 @@
     "genderOther": "其他",
     "yearsOld": "岁",
     "initializing": "初始化",
-    "generating": "生成中"
+    "generating": "生成中",
+    "agentRosterControl": "Agent 阵容控制",
+    "agentCountLabel": "Agent 数量",
+    "agentCountTip": "修改数量后点「重建阵容」生效（10-500），LLM 将结合现实种子重新筛选",
+    "evaluateRoster": "LLM 评估阵容",
+    "evaluating": "评估中...",
+    "rebuildRoster": "重建阵容",
+    "rebuilding": "重建中...",
+    "rebuildConfirm": "将按新数量重新筛选并重新生成全部 Agent 人设与配置，当前内容将被覆盖。确认继续？",
+    "evalOverallScore": "综合评分",
+    "evalDimensions": "维度评分",
+    "evalMissing": "缺失角色",
+    "evalRedundant": "冗余角色",
+    "evalSuggestions": "调整建议",
+    "evalFailed": "评估失败",
+    "rebuildStarted": "开始重建 Agent 阵容（目标 {count} 个）"
   },
   "step3": {
     "startGenerateReport": "开始生成结果报告",

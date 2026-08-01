@@ -155,3 +155,50 @@ class TestLoadRealitySeed:
             classmethod(lambda cls, pid: [])
         )
         assert load_reality_seed("proj_none") == ""
+
+
+class TestEvaluateAgents:
+    """evaluate_agents（阵容评估）解析与钳制"""
+
+    def make_profiles(self, n):
+        return [{"username": f"用户{i}", "profession": "投资者", "bio": f"简介{i}"} for i in range(n)]
+
+    def test_valid_result_parsed_and_clamped(self):
+        from app.services.entity_selector import evaluate_agents
+
+        class EvalLLM(FakeLLM):
+            def chat_json(self, messages, **kwargs):
+                return {
+                    "overall_score": 130,  # 超界 -> clamp 到 100
+                    "summary": "阵容不错",
+                    "dimensions": [{"name": "覆盖", "score": 8, "comment": "好"}],
+                    "missing_roles": ["财经自媒体"],
+                    "suggestions": ["增加散户"],
+                }
+
+        result = evaluate_agents(self.make_profiles(5), "seed", "req", llm=EvalLLM())
+        assert result["overall_score"] == 100
+        assert result["summary"] == "阵容不错"
+        assert result["missing_roles"] == ["财经自媒体"]
+
+    def test_missing_overall_score_raises(self):
+        from app.services.entity_selector import evaluate_agents
+
+        class BadEvalLLM(FakeLLM):
+            def chat_json(self, messages, **kwargs):
+                return {"summary": "没有分数"}
+
+        with pytest.raises(ValueError):
+            evaluate_agents(self.make_profiles(3), "seed", "req", llm=BadEvalLLM())
+
+    def test_missing_optional_fields_default(self):
+        from app.services.entity_selector import evaluate_agents
+
+        class MinimalLLM(FakeLLM):
+            def chat_json(self, messages, **kwargs):
+                return {"overall_score": 60}
+
+        result = evaluate_agents(self.make_profiles(2), "seed", "req", llm=MinimalLLM())
+        assert result["overall_score"] == 60
+        assert result["dimensions"] == []
+        assert result["suggestions"] == []

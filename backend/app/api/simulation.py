@@ -498,6 +498,16 @@ def prepare_simulation():
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
         
+        # 可选：Agent 数量控制（页面输入；缺省走 env AGENT_MAX_ENTITIES）
+        agent_count = data.get('agent_count')
+        if agent_count is not None:
+            try:
+                agent_count = int(agent_count)
+                if agent_count <= 0 or agent_count > 500:
+                    agent_count = None
+            except (TypeError, ValueError):
+                agent_count = None
+        
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
         try:
@@ -507,7 +517,8 @@ def prepare_simulation():
             filtered_preview = reader.filter_defined_entities(
                 graph_id=state.graph_id,
                 defined_entity_types=entity_types_list,
-                enrich_with_edges=False  # 不获取边信息，加快速度
+                enrich_with_edges=False,  # 不获取边信息，加快速度
+                max_entities=agent_count  # None 时走 env 默认值
             )
             # 保存实体数量到状态（供前端立即获取）
             state.entities_count = filtered_preview.filtered_count
@@ -617,7 +628,8 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    agent_count=agent_count
                 )
 
                 if result_state.status == SimulationStatus.FAILED:
@@ -1015,6 +1027,44 @@ def get_simulation_history():
         
     except Exception as e:
         logger.error(f"获取历史模拟失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/evaluate-agents', methods=['POST'])
+def evaluate_simulation_agents(simulation_id: str):
+    """
+    LLM 评估当前 Agent 阵容质量（阶段3「评估」按钮）
+    
+    返回：
+        overall_score (0-100) / summary / dimensions / missing_roles / redundant / suggestions
+    """
+    try:
+        from ..services.entity_selector import evaluate_agents, load_reality_seed
+        
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({"success": False, "error": t('api.simulationNotFound')}), 404
+        
+        profiles = manager.get_profiles(simulation_id, platform=_get_default_platform(simulation_id))
+        if not profiles:
+            return jsonify({"success": False, "error": "尚无已生成的 Agent 人设，请先完成准备"}), 400
+        
+        project = ProjectManager.get_project(state.project_id)
+        requirement = (project.simulation_requirement if project else "") or ""
+        seed_text = load_reality_seed(state.project_id)
+        
+        logger.info(f"LLM 评估 Agent 阵容: sim={simulation_id}, agents={len(profiles)}")
+        result = evaluate_agents(profiles, seed_text, requirement)
+        
+        return jsonify({"success": True, "data": result})
+    
+    except Exception as e:
+        logger.error(f"评估 Agent 阵容失败: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),

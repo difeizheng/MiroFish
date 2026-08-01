@@ -148,6 +148,84 @@ def _save_cache(graph_id: str, key: str, scores: Dict[str, float], model: str) -
             logger.warning(f"写入打分缓存失败 {path}: {e}")
 
 
+def evaluate_agents(
+    profiles: List[Dict[str, Any]],
+    seed_text: str,
+    requirement: str,
+    llm: Optional[LLMClient] = None,
+) -> Dict[str, Any]:
+    """
+    LLM 评估当前 Agent 阵容质量（供「评估」按钮）。
+
+    Args:
+        profiles: Agent 人设列表（reddit/twitter 格式的 dict）
+        seed_text: 现实种子文本
+        requirement: 模拟需求文本
+        llm: 可选注入的 LLM 客户端（测试用）
+
+    Returns:
+        {
+          "overall_score": 0-100,
+          "summary": "一句话总评",
+          "dimensions": [{"name": str, "score": 0-10, "comment": str}],
+          "missing_roles": [str],
+          "redundant": [str],
+          "suggestions": [str]
+        }
+    """
+    client = llm or _make_llm()
+
+    lines = []
+    for i, p in enumerate(profiles[:200], start=1):
+        name = p.get('realname') or p.get('username') or p.get('name') or f'agent_{i}'
+        profession = p.get('profession') or ''
+        bio = (p.get('bio') or '').replace('\n', ' ')[:60]
+        lines.append(f"{i}. {name}（{profession}）{('— ' + bio) if bio else ''}")
+
+    seed_excerpt = seed_text[:2500] if seed_text else "（无现实种子）"
+    req_excerpt = requirement[:800] if requirement else "（无模拟需求描述）"
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "你是舆论模拟的选角总监。给定模拟场景和已选出的 Agent 阵容，"
+                "评估阵容质量。只输出 JSON：\n"
+                "{\n"
+                "  \"overall_score\": 0-100 的整数,\n"
+                "  \"summary\": \"一句话总评\",\n"
+                "  \"dimensions\": [\n"
+                "    {\"name\": \"利益相关方覆盖\", \"score\": 0-10, \"comment\": \"...\"},\n"
+                "    {\"name\": \"立场多样性\", \"score\": 0-10, \"comment\": \"...\"},\n"
+                "    {\"name\": \"发声活跃度梯度\", \"score\": 0-10, \"comment\": \"...\"},\n"
+                "    {\"name\": \"普通网民代表性\", \"score\": 0-10, \"comment\": \"...\"}\n"
+                "  ],\n"
+                "  \"missing_roles\": [\"场景中重要但缺失的角色类型\"],\n"
+                "  \"redundant\": [\"明显重复/冗余的角色\"],\n"
+                "  \"suggestions\": [\"具体可操作的调整建议\"]\n"
+                "}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"【模拟需求】\n{req_excerpt}\n\n"
+                f"【现实种子】\n{seed_excerpt}\n\n"
+                f"【Agent 阵容（{len(lines)} 个）】\n" + "\n".join(lines)
+            ),
+        },
+    ]
+
+    result = client.chat_json(messages, temperature=0.3, max_tokens=4096, max_attempts=2)
+    if not isinstance(result.get('overall_score'), (int, float)):
+        raise ValueError(f"评估结果缺少 overall_score: {str(result)[:200]}")
+    result['overall_score'] = max(0, min(100, int(result['overall_score'])))
+    for key, default in [('summary', ''), ('dimensions', []), ('missing_roles', []),
+                         ('redundant', []), ('suggestions', [])]:
+        result.setdefault(key, default)
+    return result
+
+
 class EntitySelector:
     """LLM 实体打分筛选器"""
 
