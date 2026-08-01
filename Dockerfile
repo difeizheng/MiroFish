@@ -22,9 +22,12 @@ COPY backend/pyproject.toml backend/uv.lock ./backend/
 
 # 安装依赖（Node + Python）
 # npm 走 npmmirror（registry.npmjs.org 本网络单请求 10s+，npm ci 必超时）
+# graphiti-core 单独 pip install：它要求 neo4j>=5.26 但 camel-oasis 钉 neo4j==5.23，
+# uv 解析冲突；neo4j driver 5.x API 完全兼容，--no-deps 绕过解析。
 RUN npm ci --registry=https://registry.npmmirror.com \
   && npm ci --prefix frontend --registry=https://registry.npmmirror.com \
-  && cd backend && uv sync --frozen
+  && cd backend && uv sync --frozen \
+  && uv pip install --no-deps graphiti-core==0.29.3 tenacity>=9.0.0 posthog>=3.0.0
 
 # 复制项目源码
 COPY . .

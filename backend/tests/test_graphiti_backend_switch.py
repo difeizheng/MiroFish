@@ -161,10 +161,29 @@ class TestGetZepClientRouting:
 # ============================================================
 
 class TestShouldUseLocalWrite:
-    def test_graphiti_mode_returns_true(self, monkeypatch):
-        """graphiti 模式写路径走本地 JSONL（读路径走 Neo4j）。"""
+    def test_graphiti_mode_no_extraction_config_returns_true(self, monkeypatch):
+        """graphiti 模式但未配 EXTRACTION/EMBED 时，写路径走本地 JSONL（降级）。"""
         monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
         monkeypatch.setenv("GRAPH_LOCAL_ONLY", "")
+        monkeypatch.delenv("EXTRACTION_API_KEY", raising=False)
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is True
+
+    def test_graphiti_mode_with_extraction_returns_false(self, monkeypatch):
+        """graphiti 模式且配了 EXTRACTION+EMBED 时，写路径走 graphiti.add_episode。"""
+        monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "")
+        monkeypatch.setenv("EXTRACTION_API_KEY", "sk-test")
+        monkeypatch.setenv("EMBED_API_KEY", "sk-test")
+        from app.utils.zep import should_use_local_write
+        assert should_use_local_write() is False
+
+    def test_graphiti_partial_config_returns_true(self, monkeypatch):
+        """只配了 EXTRACTION 但没配 EMBED 时，仍降级（两者都需要）。"""
+        monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
+        monkeypatch.setenv("EXTRACTION_API_KEY", "sk-test")
+        monkeypatch.delenv("EMBED_API_KEY", raising=False)
         from app.utils.zep import should_use_local_write
         assert should_use_local_write() is True
 
@@ -176,13 +195,6 @@ class TestShouldUseLocalWrite:
 
     def test_zep_mode_with_local_only_returns_true(self, monkeypatch):
         monkeypatch.setenv("GRAPH_BACKEND", "zep")
-        monkeypatch.setenv("GRAPH_LOCAL_ONLY", "1")
-        from app.utils.zep import should_use_local_write
-        assert should_use_local_write() is True
-
-    def test_graphiti_ignores_local_only_flag(self, monkeypatch):
-        """graphiti 模式不管 GRAPH_LOCAL_ONLY 怎么设，写路径都走本地。"""
-        monkeypatch.setenv("GRAPH_BACKEND", "graphiti")
         monkeypatch.setenv("GRAPH_LOCAL_ONLY", "1")
         from app.utils.zep import should_use_local_write
         assert should_use_local_write() is True

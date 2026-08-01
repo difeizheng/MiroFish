@@ -140,6 +140,16 @@ class Config(metaclass=_ConfigMeta):
     NEO4J_PASSWORD = os.environ.get('NEO4J_PASSWORD', '')
     NEO4J_DATABASE = os.environ.get('NEO4J_DATABASE', 'neo4j')
 
+    # Graphiti 写路径 LLM 配置（方案 D 阶段 1B）
+    # 抽取 LLM：用于 graphiti.add_episode 时从文本抽取实体/关系
+    EXTRACTION_API_KEY = os.environ.get('EXTRACTION_API_KEY', '')
+    EXTRACTION_BASE_URL = os.environ.get('EXTRACTION_BASE_URL', '')
+    EXTRACTION_MODEL_NAME = os.environ.get('EXTRACTION_MODEL_NAME', '')
+    # Embedder：用于图谱节点向量化（搜索时用）
+    EMBED_API_KEY = os.environ.get('EMBED_API_KEY', '')
+    EMBED_BASE_URL = os.environ.get('EMBED_BASE_URL', '')
+    EMBED_MODEL_NAME = os.environ.get('EMBED_MODEL_NAME', '')
+
     # 文件上传配置
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50MB
     UPLOAD_FOLDER = os.path.join(os.path.dirname(__file__), '../uploads')

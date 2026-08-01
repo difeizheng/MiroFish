@@ -45,12 +45,16 @@ def should_use_local_write() -> bool:
     """写路径是否走本地 JSONL 降级。
 
     - GRAPH_LOCAL_ONLY=1 时走本地（Zep 额度耗尽离线模式）
-    - GRAPH_BACKEND=graphiti 时也走本地（写路径暂不接入 graphiti.add_episode，
-      避免 LLM token 消耗；读路径仍走 Neo4j 直查）
-    - 阶段 1B 接入写路径后可移除此函数的 graphiti 分支
+    - GRAPH_BACKEND=graphiti 且未配置 EXTRACTION_*/EMBED_* 时走本地（写路径降级）
+    - GRAPH_BACKEND=graphiti 且已配置 EXTRACTION_*/EMBED_* 时走 graphiti.add_episode（阶段 1B）
     """
     if os.environ.get('GRAPH_BACKEND', 'zep') == 'graphiti':
-        return True  # 写路径降级，读路径走 Neo4j
+        # 阶段 1B：配置了抽取 LLM 和 embedder 时走 graphiti 写路径
+        ext_key = os.environ.get('EXTRACTION_API_KEY', '').strip()
+        emb_key = os.environ.get('EMBED_API_KEY', '').strip()
+        if ext_key and emb_key:
+            return False  # 走 graphiti.add_episode
+        return True  # 未配置写路径 LLM，降级到本地
     return os.environ.get('GRAPH_LOCAL_ONLY', '').lower() in ('1', 'true', 'yes')
 
 
@@ -87,11 +91,11 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
 
 
 @lru_cache(maxsize=4)
-def _cached_graphiti_shim(uri: str, user: str, password: str, database: str):
+def _cached_graphiti_shim(uri: str, user: str, password: str, database: str, graphiti_factory=None):
     """缓存 GraphitiShimClient 实例（方案 D）。"""
     # 延迟导入：仅在启用 graphiti 后端时才加载 neo4j driver
     from ..services.graphiti_shim import GraphitiShimClient
-    return GraphitiShimClient(uri, user, password, database=database)
+    return GraphitiShimClient(uri, user, password, database=database, graphiti_factory=graphiti_factory)
 
 
 def get_zep_client(api_key: str | None = None, timeout: float | None = None):
@@ -126,14 +130,30 @@ def get_zep_client(api_key: str | None = None, timeout: float | None = None):
 
 
 def _get_graphiti_client():
-    """构造 GraphitiShimClient（方案 D）。"""
+    """构造 GraphitiShimClient（方案 D）。
+
+    阶段 1B：如果配置了 EXTRACTION_* 和 EMBED_*，传 graphiti_factory 启用写路径；
+    未配置时 graphiti_factory=None（写路径降级到本地 JSONL）。
+    """
     uri = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
     user = os.environ.get('NEO4J_USER', 'neo4j')
     password = os.environ.get('NEO4J_PASSWORD', '')
     database = os.environ.get('NEO4J_DATABASE', 'neo4j')
     if not password:
         raise ValueError("NEO4J_PASSWORD 未配置（GRAPH_BACKEND=graphiti 需要）")
-    return _cached_graphiti_shim(uri, user, password, database)
+
+    # 阶段 1B：配置了抽取 LLM 和 embedder 时启用写路径
+    graphiti_factory = None
+    ext_key = os.environ.get('EXTRACTION_API_KEY', '').strip()
+    emb_key = os.environ.get('EMBED_API_KEY', '').strip()
+    if ext_key and emb_key:
+        try:
+            from ..services.graphiti_shim import create_graphiti_instance
+            graphiti_factory = create_graphiti_instance  # 工厂函数，shim 调用时才创建实例
+        except ImportError as e:
+            logger.warning(f"graphiti-core 未安装，写路径降级到本地 JSONL: {e}")
+
+    return _cached_graphiti_shim(uri, user, password, database, graphiti_factory)
 
 
 def clear_zep_client_cache() -> None:

@@ -45,6 +45,106 @@ logger = get_logger("mirofish.graphiti_shim")
 
 
 # ============================================================
+# Graphiti-core 实例工厂（阶段 1B 写路径）
+# ============================================================
+
+def create_graphiti_instance():
+    """创建 graphiti-core Graphiti 实例（写路径用）。
+
+    从环境变量读取 EXTRACTION_* 和 EMBED_* 配置，构造：
+    - LLMClient: OpenAIGenericClient（支持任意 OpenAI 兼容 /chat/completions）
+    - EmbedderClient: OpenAIEmbedder（支持任意 OpenAI 兼容 /embeddings）
+
+    未配置时抛 ValueError（调用方决定是否降级）。
+    """
+    import os
+    from graphiti_core import Graphiti
+    from graphiti_core.llm_client.config import LLMConfig
+    from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+    from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+
+    # Neo4j 连接（复用 shim 的配置）
+    uri = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
+    user = os.environ.get('NEO4J_USER', 'neo4j')
+    password = os.environ.get('NEO4J_PASSWORD', '')
+
+    # 抽取 LLM 配置
+    ext_key = os.environ.get('EXTRACTION_API_KEY', '').strip()
+    ext_url = os.environ.get('EXTRACTION_BASE_URL', '').strip()
+    ext_model = os.environ.get('EXTRACTION_MODEL_NAME', '').strip()
+    if not (ext_key and ext_url and ext_model):
+        raise ValueError(
+            "EXTRACTION_API_KEY/EXTRACTION_BASE_URL/EXTRACTION_MODEL_NAME 未配置"
+            "（graphiti 写路径需要抽取 LLM）"
+        )
+
+    # Embedder 配置
+    emb_key = os.environ.get('EMBED_API_KEY', '').strip()
+    emb_url = os.environ.get('EMBED_BASE_URL', '').strip()
+    emb_model = os.environ.get('EMBED_MODEL_NAME', '').strip()
+    if not (emb_key and emb_url and emb_model):
+        raise ValueError(
+            "EMBED_API_KEY/EMBED_BASE_URL/EMBED_MODEL_NAME 未配置"
+            "（graphiti 写路径需要 embedder）"
+        )
+
+    llm_config = LLMConfig(
+        api_key=ext_key,
+        base_url=ext_url,
+        model=ext_model,
+        small_model=ext_model,  # 小模型也用同一个
+    )
+    llm_client = OpenAIGenericClient(config=llm_config)
+
+    embedder_config = OpenAIEmbedderConfig(
+        api_key=emb_key,
+        base_url=emb_url,
+        embedding_model=emb_model,
+    )
+    embedder = OpenAIEmbedder(config=embedder_config)
+
+    graphiti = Graphiti(
+        uri=uri,
+        user=user,
+        password=password,
+        llm_client=llm_client,
+        embedder=embedder,
+    )
+    logger.info(
+        f"Graphiti instance created: llm={ext_model}@{ext_url}, embed={emb_model}@{emb_url}"
+    )
+    return graphiti
+
+
+def _run_async(coro):
+    """同步包装 async coroutine（兼容有无 event loop 的环境）。"""
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 已有 running loop（如 Flask 在 async 上下文），新建独立 loop
+            import threading
+            result = [None]
+            exc = [None]
+            def _run():
+                try:
+                    new_loop = asyncio.new_event_loop()
+                    result[0] = new_loop.run_until_complete(coro)
+                    new_loop.close()
+                except Exception as e:
+                    exc[0] = e
+            t = threading.Thread(target=_run)
+            t.start()
+            t.join()
+            if exc[0]:
+                raise exc[0]
+            return result[0]
+    except RuntimeError:
+        pass  # 没有 event loop，走 asyncio.run
+    return asyncio.run(coro)
+
+
+# ============================================================
 # 模拟 Zep SDK 返回对象的工厂函数
 # ============================================================
 
@@ -442,6 +542,84 @@ class _GraphAPI:
             self._ontology_cache[gid] = {"entities": entities, "edges": edges or {}}
         logger.info(f"Graphiti shim: cached ontology for {len(graph_ids)} graph(s)")
 
+    def add(
+        self,
+        *,
+        graph_id: str,
+        type: str = "text",
+        data: str,
+        created_at: str | None = None,
+        source_description: str = "",
+        metadata: Dict[str, Any] | None = None,
+        **kwargs,
+    ) -> SimpleNamespace:
+        """写入 episode：调用 graphiti.add_episode 做 LLM 抽取。
+
+        Zep Cloud 的 graph.add 签名（MiroFish memory_updater 调用）：
+            client.graph.add(graph_id=, type=, data=, created_at=,
+                             source_description=, metadata=)
+
+        shim 转换为 graphiti.add_episode：
+            graphiti.add_episode(name=, episode_body=, source_description=,
+                                 reference_time=, group_id=, source=EpisodeType.message)
+
+        未配置 graphiti_factory 或 EXTRACTION_* 时抢 ValueError，
+        调用方（memory_updater）应捕获后降级写本地 JSONL。
+        """
+        from datetime import datetime, timezone
+
+        if not self._graphiti_factory:
+            raise ValueError("graphiti_factory 未配置（无法执行写路径）")
+
+        from graphiti_core.nodes import EpisodeType
+
+        # 解析 created_at（RFC3339 字符串）
+        if created_at:
+            try:
+                ref_time = datetime.fromisoformat(
+                    created_at.replace("Z", "+00:00")
+                )
+            except ValueError:
+                ref_time = datetime.now(timezone.utc)
+        else:
+            ref_time = datetime.now(timezone.utc)
+
+        graphiti = self._graphiti_factory()
+
+        # 生成 episode 名字
+        ep_name = f"episode_{int(ref_time.timestamp())}"
+        if metadata and metadata.get("simulation_id"):
+            ep_name = f"sim_{metadata['simulation_id']}_{ep_name}"
+
+        # 取缓存的 ontology 作为 entity_types
+        ontology = self._ontology_cache.get(graph_id, {})
+        entity_types = ontology.get("entities")
+
+        result = _run_async(
+            graphiti.add_episode(
+                name=ep_name,
+                episode_body=data,
+                source_description=source_description or "MiroFish episode",
+                reference_time=ref_time,
+                source=EpisodeType.message,
+                group_id=graph_id,
+                entity_types=entity_types,
+            )
+        )
+
+        # add_episode 返回 AddEpisodeResults，取 episode uuid
+        ep_uuid = ""
+        if result and hasattr(result, "episode") and result.episode:
+            ep_uuid = getattr(result.episode, "uuid", "") or str(uuid.uuid4())
+        else:
+            ep_uuid = str(uuid.uuid4())
+
+        logger.info(
+            f"Graphiti shim graph.add: graph_id={graph_id}, "
+            f"episode={ep_uuid}, data_len={len(data)}"
+        )
+        return SimpleNamespace(uuid_=ep_uuid, uuid=ep_uuid)
+
     def search(
         self,
         query: str,
@@ -540,8 +718,9 @@ class _BatchAPI:
     MiroFish 的 graph_builder 依赖 batch_id 做 reconcile，shim 用确定性 ID 兜底。
     """
 
-    def __init__(self, database):
+    def __init__(self, database, graphiti_factory=None):
         self._database = database
+        self._graphiti_factory = graphiti_factory
         self._batches: Dict[str, Dict] = {}  # batch_id -> {items, status, metadata}
 
     def create(self, metadata: Dict | None = None, **kwargs) -> SimpleNamespace:
@@ -582,12 +761,56 @@ class _BatchAPI:
         return details
 
     def process(self, batch_id: str, **kwargs):
+        """处理 batch：逐条调 graphiti.add_episode 做 LLM 抽取。
+
+        未配置 graphiti_factory 时为 noop（保持阶段 1A 行为）。
+        """
+        from datetime import datetime, timezone
+
         batch = self._batches.get(batch_id)
         if batch is None:
             raise NotFoundError(f"Batch {batch_id} not found")
+
+        if not self._graphiti_factory:
+            batch["status"] = "succeeded"
+            logger.info(f"Graphiti shim batch.process: {batch_id} (noop, no graphiti_factory)")
+            return
+
+        from graphiti_core.nodes import EpisodeType
+        graphiti = self._graphiti_factory()
+        processed = 0
+        for item in batch["items"]:
+            data = item.get("data", "")
+            graph_id = item.get("graph_id")
+            if not data:
+                continue
+            try:
+                ref_time = datetime.now(timezone.utc)
+                result = _run_async(
+                    graphiti.add_episode(
+                        name=f"batch_{batch_id}_{item['sequence_index']}",
+                        episode_body=data,
+                        source_description="MiroFish graph build batch",
+                        reference_time=ref_time,
+                        source=EpisodeType.message,
+                        group_id=graph_id or batch["metadata"].get("graph_id"),
+                    )
+                )
+                ep_uuid = ""
+                if result and hasattr(result, "episode") and result.episode:
+                    ep_uuid = getattr(result.episode, "uuid", "") or item["episode_uuid"]
+                else:
+                    ep_uuid = item["episode_uuid"]
+                item["episode_uuid"] = ep_uuid
+                item["status"] = "succeeded"
+                processed += 1
+            except Exception as e:
+                logger.error(f"Batch item {item['sequence_index']} failed: {e}")
+                item["status"] = "failed"
+                item["error"] = str(e)
+
         batch["status"] = "succeeded"
-        # TODO: 阶段 1B 接入 graphiti.add_episode 做真正的 LLM 抽取
-        logger.info(f"Graphiti shim batch.process: {batch_id} (noop in phase 1A)")
+        logger.info(f"Graphiti shim batch.process: {batch_id}, processed {processed}/{len(batch['items'])}")
 
     def get(self, batch_id: str, **kwargs) -> SimpleNamespace:
         batch = self._batches.get(batch_id)
@@ -659,7 +882,7 @@ class GraphitiShimClient:
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
         self._database = database
         self.graph = _GraphAPI(self._driver, database, graphiti_factory)
-        self.batch = _BatchAPI(database)
+        self.batch = _BatchAPI(database, graphiti_factory)
         logger.info(
             f"GraphitiShimClient initialized: uri={neo4j_uri}, database={database}"
         )
