@@ -353,7 +353,7 @@ class ZepEntityReader:
             custom_labels = [l for l in labels if l not in ["Entity", "Node"]]
             
             if not custom_labels:
-                # 只有默认标签，跳过
+                # 只有默认标签，跳过（Zep Cloud 模式下细分类型已写入 label）
                 continue
             
             # 如果指定了预定义类型，检查是否匹配
@@ -367,6 +367,24 @@ class ZepEntityReader:
             
             entity_types_found.add(entity_type)
             candidates.append((node, entity_type))
+        
+        # ===== graphiti 降级：所有节点只有 "Entity" label 时不做类型过滤 =====
+        # graphiti-core 不按 ontology 给节点打细分 label（不像 Zep Cloud），
+        # 类型信息在 summary 文本里。此时全部纳入候选，靠 entity_selector 的
+        # LLM 智能筛选来决定哪些实体适合做 Agent。
+        if not candidates and all_nodes:
+            logger.warning(
+                f"图谱 {graph_id} 所有节点只有 'Entity' 标签（graphiti 模式），"
+                f"降级为不做类型过滤，全部 {len(all_nodes)} 个节点纳入候选"
+            )
+            for node in all_nodes:
+                name = (node.get('name') or '').strip()
+                if not name or name.lower() in extra_deny:
+                    continue
+                if self._is_generic_name(name):
+                    continue
+                candidates.append((node, 'Entity'))
+            entity_types_found.add('Entity')
         
         # ===== 第二遍：质量过滤（通用名黑名单 → 度数阈值 → 按度数排序截断）=====
         quality_before = len(candidates)
@@ -404,7 +422,7 @@ class ZepEntityReader:
                 name=node["name"],
                 labels=node.get("labels", []),
                 summary=node["summary"],
-                attributes=node["attributes"],
+                attributes=node.get("attributes", {}),
             )
             
             # 获取相关边和节点
