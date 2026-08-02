@@ -878,6 +878,7 @@ class _BatchAPI:
                 else:
                     ep_uuid = item["episode_uuid"]
                 item["episode_uuid"] = ep_uuid
+                item["source_uuid"] = ep_uuid  # 同步更新，避免 mismatched UUID 校验失败
                 item["status"] = "succeeded"
                 processed += 1
             except Exception as e:

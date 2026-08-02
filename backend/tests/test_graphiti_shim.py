@@ -254,6 +254,31 @@ class TestBatchAPI:
         assert len(page3.items) == 1
         assert page3.next_cursor is None
 
+    def test_add_items_source_uuid_matches_episode_uuid(self):
+        """回归测试：add() 后每个 item 的 source_uuid 必须 == episode_uuid。
+
+        graph_builder._wait_for_batch 会校验 source_uuid == episode_uuid，
+        不一致时报 'mismatched episode UUIDs'。
+        """
+        b = _shim._BatchAPI("neo4j")
+        bid = b.create().batch_id
+        b.add(bid, [SimpleNamespace(data="chunk1"), SimpleNamespace(data="chunk2")])
+        items = b.list_items(bid).items
+        for item in items:
+            assert item.episode_uuid == item.source_uuid, (
+                f"episode_uuid={item.episode_uuid} != source_uuid={item.source_uuid}"
+            )
+
+    def test_process_noop_preserves_uuid_consistency(self):
+        """回归测试：process() noop 模式后 source_uuid 仍 == episode_uuid。"""
+        b = _shim._BatchAPI("neo4j")  # 无 graphiti_factory → noop
+        bid = b.create().batch_id
+        b.add(bid, [SimpleNamespace(data="x")])
+        b.process(batch_id=bid)
+        items = b.list_items(bid).items
+        assert items[0].episode_uuid == items[0].source_uuid
+        assert items[0].status == "succeeded"
+
 
 # ============================================================
 # 4. _GraphAPI 读路径测试（mock driver）
