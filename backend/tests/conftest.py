@@ -12,4 +12,6 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _neutralize_local_only_flags(monkeypatch):
+    """测试默认走 zep 后端、关闭离线模式，避免 .env / 容器 env 污染。"""
     monkeypatch.delenv('GRAPH_LOCAL_ONLY', raising=False)
+    monkeypatch.setenv('GRAPH_BACKEND', 'zep')

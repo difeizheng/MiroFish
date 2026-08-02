@@ -91,11 +91,13 @@ def _cached_zep_client(api_key: str, timeout: float) -> Zep:
 
 
 @lru_cache(maxsize=4)
-def _cached_graphiti_shim(uri: str, user: str, password: str, database: str, graphiti_factory=None):
-    """缓存 GraphitiShimClient 实例（方案 D）。"""
-    # 延迟导入：仅在启用 graphiti 后端时才加载 neo4j driver
+def _cached_graphiti_shim(uri: str, user: str, password: str, database: str, _marker: str = ""):
+    """缓存 GraphitiShimClient 实例（方案 D）。
+
+    _marker 不参与实例创建，仅用于缓存键区分有/无写路径配置。
+    """
     from ..services.graphiti_shim import GraphitiShimClient
-    return GraphitiShimClient(uri, user, password, database=database, graphiti_factory=graphiti_factory)
+    return GraphitiShimClient(uri, user, password, database=database)
 
 
 def get_zep_client(api_key: str | None = None, timeout: float | None = None):
@@ -111,9 +113,6 @@ def get_zep_client(api_key: str | None = None, timeout: float | None = None):
         return _get_graphiti_client()
 
     # --- Zep Cloud 路径 ---
-    # zep-cloud gives ZEP_API_URL precedence even when base_url is explicit.
-    # Reject it so this Cloud-only integration cannot silently target a
-    # self-hosted or compatibility endpoint.
     if os.environ.get("ZEP_API_URL"):
         raise ValueError("ZEP_API_URL is unsupported; unset it to use Zep Cloud")
 
@@ -132,8 +131,8 @@ def get_zep_client(api_key: str | None = None, timeout: float | None = None):
 def _get_graphiti_client():
     """构造 GraphitiShimClient（方案 D）。
 
-    阶段 1B：如果配置了 EXTRACTION_* 和 EMBED_*，传 graphiti_factory 启用写路径；
-    未配置时 graphiti_factory=None（写路径降级到本地 JSONL）。
+    阶段 1B：配置了 EXTRACTION_*+EMBED_* 时启用写路径（graphiti.add_episode）；
+    未配置时写路径降级到本地 JSONL（读路径仍走 Neo4j）。
     """
     uri = os.environ.get('NEO4J_URI', 'bolt://localhost:7687')
     user = os.environ.get('NEO4J_USER', 'neo4j')
@@ -142,18 +141,27 @@ def _get_graphiti_client():
     if not password:
         raise ValueError("NEO4J_PASSWORD 未配置（GRAPH_BACKEND=graphiti 需要）")
 
-    # 阶段 1B：配置了抽取 LLM 和 embedder 时启用写路径
-    graphiti_factory = None
     ext_key = os.environ.get('EXTRACTION_API_KEY', '').strip()
     emb_key = os.environ.get('EMBED_API_KEY', '').strip()
-    if ext_key and emb_key:
+    marker = "write" if (ext_key and emb_key) else "readonly"
+    client = _cached_graphiti_shim(uri, user, password, database, marker)
+
+    # 懒注入 graphiti_factory（只在首次需要写路径时创建）
+    if ext_key and emb_key and client.graph._graphiti_factory is None:
         try:
             from ..services.graphiti_shim import create_graphiti_instance
-            graphiti_factory = create_graphiti_instance  # 工厂函数，shim 调用时才创建实例
+            _cache = [None]
+            def _factory():
+                if _cache[0] is None:
+                    _cache[0] = create_graphiti_instance()
+                return _cache[0]
+            client.graph._graphiti_factory = _factory
+            client.batch._graphiti_factory = _factory
+            logger.info("graphiti 写路径已启用")
         except ImportError as e:
-            logger.warning(f"graphiti-core 未安装，写路径降级到本地 JSONL: {e}")
+            logger.warning(f"graphiti-core 未安装，写路径降级: {e}")
 
-    return _cached_graphiti_shim(uri, user, password, database, graphiti_factory)
+    return client
 
 
 def clear_zep_client_cache() -> None:

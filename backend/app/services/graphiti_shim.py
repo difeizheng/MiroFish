@@ -48,6 +48,66 @@ logger = get_logger("mirofish.graphiti_shim")
 # Graphiti-core 实例工厂（阶段 1B 写路径）
 # ============================================================
 
+from graphiti_core.embedder.client import EmbedderClient
+from graphiti_core.cross_encoder.client import CrossEncoderClient
+
+
+class _MiniMaxEmbedder(EmbedderClient):
+    """MiniMax 原生 embedding 端点适配（非 OpenAI 兼容格式）。
+
+    MiniMax /v1/embeddings 入参是 {"texts":[...],"type":"db"} 而非
+    OpenAI 的 {"input":[...]}，返回是 {"vectors":[[...]]} 而非
+    {"data":[{"embedding":...}]}，需要专门适配。
+
+    仅当 EMBED_BASE_URL 含 minimax 时使用。
+    """
+
+    def __init__(self, api_key: str, model: str, base_url: str):
+        from graphiti_core.embedder.client import EmbedderConfig
+        self.config = EmbedderConfig(embedding_dim=1536)
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url.rstrip('/')
+
+    async def create(self, input_data) -> list[float]:
+        if isinstance(input_data, list):
+            input_data = input_data[0] if input_data else ""
+        vecs = await self._embed_batch([str(input_data)])
+        return vecs[0]
+
+    async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
+        return await self._embed_batch([str(x) for x in input_data_list])
+
+    async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        import httpx
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(
+                f"{self.base_url}/embeddings",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={"model": self.model, "texts": texts, "type": "db"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            base_resp = data.get("base_resp", {})
+            if base_resp.get("status_code", 0) != 0:
+                raise RuntimeError(f"MiniMax embedding error: {base_resp}")
+            vectors = data.get("vectors")
+            if not vectors:
+                raise RuntimeError("MiniMax returned empty vectors")
+            return vectors
+
+
+class _NoopReranker(CrossEncoderClient):
+    """空 reranker：不排序，原样返回。
+
+    Graphiti 初始化时默认创建 OpenAIRerankerClient（需要 OPENAI_API_KEY）。
+    MiroFish 不需要搜索重排，用 noop 避免额外 API key 依赖。
+    """
+
+    async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
+        return [(p, 1.0) for p in passages]
+
+
 def create_graphiti_instance():
     """创建 graphiti-core Graphiti 实例（写路径用）。
 
@@ -55,6 +115,7 @@ def create_graphiti_instance():
     - LLMClient: OpenAIGenericClient（支持任意 OpenAI 兼容 /chat/completions）
     - EmbedderClient: OpenAIEmbedder（支持任意 OpenAI 兼容 /embeddings）
 
+    兼容两种变量命名：EXTRACTION_BASE_URL / EXTRACTION_API_URL 都认。
     未配置时抛 ValueError（调用方决定是否降级）。
     """
     import os
@@ -68,20 +129,40 @@ def create_graphiti_instance():
     user = os.environ.get('NEO4J_USER', 'neo4j')
     password = os.environ.get('NEO4J_PASSWORD', '')
 
-    # 抽取 LLM 配置
-    ext_key = os.environ.get('EXTRACTION_API_KEY', '').strip()
-    ext_url = os.environ.get('EXTRACTION_BASE_URL', '').strip()
-    ext_model = os.environ.get('EXTRACTION_MODEL_NAME', '').strip()
+    # 抽取 LLM 配置（兼容两种变量命名）
+    ext_key = (
+        os.environ.get('EXTRACTION_API_KEY', '').strip()
+    )
+    ext_url = (
+        os.environ.get('EXTRACTION_BASE_URL')
+        or os.environ.get('EXTRACTION_API_URL')
+        or ''
+    ).strip()
+    ext_model = (
+        os.environ.get('EXTRACTION_MODEL_NAME')
+        or os.environ.get('EXTRACTION_MODEL')
+        or ''
+    ).strip()
     if not (ext_key and ext_url and ext_model):
         raise ValueError(
             "EXTRACTION_API_KEY/EXTRACTION_BASE_URL/EXTRACTION_MODEL_NAME 未配置"
             "（graphiti 写路径需要抽取 LLM）"
         )
 
-    # Embedder 配置
-    emb_key = os.environ.get('EMBED_API_KEY', '').strip()
-    emb_url = os.environ.get('EMBED_BASE_URL', '').strip()
-    emb_model = os.environ.get('EMBED_MODEL_NAME', '').strip()
+    # Embedder 配置（兼容两种变量命名）
+    emb_key = (
+        os.environ.get('EMBED_API_KEY', '').strip()
+    )
+    emb_url = (
+        os.environ.get('EMBED_BASE_URL')
+        or os.environ.get('EMBED_API_URL')
+        or ''
+    ).strip()
+    emb_model = (
+        os.environ.get('EMBED_MODEL_NAME')
+        or os.environ.get('EMBED_MODEL')
+        or ''
+    ).strip()
     if not (emb_key and emb_url and emb_model):
         raise ValueError(
             "EMBED_API_KEY/EMBED_BASE_URL/EMBED_MODEL_NAME 未配置"
@@ -101,7 +182,13 @@ def create_graphiti_instance():
         base_url=emb_url,
         embedding_model=emb_model,
     )
-    embedder = OpenAIEmbedder(config=embedder_config)
+
+    # MiniMax embedding API 不是 OpenAI 兼容格式，需要专门适配器
+    if 'minimax' in emb_url.lower():
+        embedder = _MiniMaxEmbedder(api_key=emb_key, model=emb_model, base_url=emb_url)
+        logger.info(f"Using _MiniMaxEmbedder for non-OpenAI-compatible embedding API")
+    else:
+        embedder = OpenAIEmbedder(config=embedder_config)
 
     graphiti = Graphiti(
         uri=uri,
@@ -109,6 +196,7 @@ def create_graphiti_instance():
         password=password,
         llm_client=llm_client,
         embedder=embedder,
+        cross_encoder=_NoopReranker(),
     )
     logger.info(
         f"Graphiti instance created: llm={ext_model}@{ext_url}, embed={emb_model}@{emb_url}"
@@ -116,32 +204,22 @@ def create_graphiti_instance():
     return graphiti
 
 
+_GRAPHTI_LOOP = None
+
+
 def _run_async(coro):
-    """同步包装 async coroutine（兼容有无 event loop 的环境）。"""
+    """同步包装 async coroutine（创建独立 event loop，避免 driver 连接跨 loop 复用问题）。
+
+    neo4j async driver 连接绑定到首次使用的 event loop；graphiti 实例被 lru_cache 缓存后，
+    如果用 asyncio.run()（每次创建新 loop），第二次调用会报 "attached to a different loop"。
+    解决：用模块级单例 loop，所有 _run_async 调用共用同一个 loop。
+    """
     import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # 已有 running loop（如 Flask 在 async 上下文），新建独立 loop
-            import threading
-            result = [None]
-            exc = [None]
-            def _run():
-                try:
-                    new_loop = asyncio.new_event_loop()
-                    result[0] = new_loop.run_until_complete(coro)
-                    new_loop.close()
-                except Exception as e:
-                    exc[0] = e
-            t = threading.Thread(target=_run)
-            t.start()
-            t.join()
-            if exc[0]:
-                raise exc[0]
-            return result[0]
-    except RuntimeError:
-        pass  # 没有 event loop，走 asyncio.run
-    return asyncio.run(coro)
+    global _GRAPHTI_LOOP
+    if _GRAPHTI_LOOP is None or _GRAPHTI_LOOP.is_closed():
+        _GRAPHTI_LOOP = asyncio.new_event_loop()
+    task = asyncio.ensure_future(coro, loop=_GRAPHTI_LOOP)
+    return _GRAPHTI_LOOP.run_until_complete(task)
 
 
 # ============================================================
@@ -573,13 +651,16 @@ class _GraphAPI:
 
         from graphiti_core.nodes import EpisodeType
 
-        # 解析 created_at（RFC3339 字符串）
+        # 解析 created_at（datetime 对象或 RFC3339 字符串）
         if created_at:
             try:
-                ref_time = datetime.fromisoformat(
-                    created_at.replace("Z", "+00:00")
-                )
-            except ValueError:
+                if isinstance(created_at, datetime):
+                    ref_time = created_at
+                else:
+                    ref_time = datetime.fromisoformat(
+                        created_at.replace("Z", "+00:00")
+                    )
+            except (ValueError, AttributeError):
                 ref_time = datetime.now(timezone.utc)
         else:
             ref_time = datetime.now(timezone.utc)
@@ -681,16 +762,11 @@ class _GraphAPI:
 
     def _search_via_graphiti(self, query, graph_id, group_ids, top_k):
         """通过 graphiti-core 做真正的向量+关键词混合搜索。"""
-        import asyncio
         graphiti = self._graphiti_factory()
         gids = group_ids or ([graph_id] if graph_id else [])
-        try:
-            results = asyncio.get_event_loop().run_until_complete(
-                graphiti.search(query, group_ids=gids, num_results=top_k)
-            )
-        except RuntimeError:
-            # 没有 event loop 的环境
-            results = asyncio.run(graphiti.search(query, group_ids=gids, num_results=top_k))
+        results = _run_async(
+            graphiti.search(query, group_ids=gids, num_results=top_k)
+        )
         # graphiti 返回 EntityEdge 对象，转成 SimpleNamespace 对齐 Zep 结构
         return [
             SimpleNamespace(
