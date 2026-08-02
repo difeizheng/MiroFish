@@ -44,6 +44,7 @@ from app.services.graphiti_shim import (
     _EdgeAPI,
     _EpisodeAPI,
     GraphDatabase,
+    _run_async,
 )
 
 _shim = SimpleNamespace(
@@ -562,3 +563,54 @@ class TestGraphitiShimClient:
             client = _shim.GraphitiShimClient("bolt://x", "u", "p")
             client.close()
             mock_driver.close.assert_called_once()
+
+
+# ============================================================
+# _run_async 并发安全测试
+# ============================================================
+
+class TestRunAsyncConcurrency:
+    """回归测试：_run_async 在多线程并发调用时不报 'This event loop is already running'。
+
+    场景：oasis_profile_generator 用 ThreadPoolExecutor 并行为多个实体调
+    graphiti search，每个 search 最终调 _run_async。原全局单例 loop 在
+    run_until_complete 时会报 already running。
+    """
+
+    def test_concurrent_run_async_from_multiple_threads(self):
+        import concurrent.futures
+        import asyncio
+
+        async def _double(x):
+            await asyncio.sleep(0.01)
+            return x * 2
+
+        def worker(x):
+            return _run_async(_double(x), timeout=30)
+
+        # 4 个线程并发调
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [ex.submit(worker, i) for i in range(8)]
+            results = [f.result() for f in futures]
+
+        assert sorted(results) == [0, 2, 4, 6, 8, 10, 12, 14]
+
+    def test_run_async_returns_value(self):
+        import asyncio
+
+        async def _hello():
+            await asyncio.sleep(0.001)
+            return "hello"
+
+        assert _run_async(_hello(), timeout=10) == "hello"
+
+    def test_run_async_same_loop_across_calls(self):
+        """同一线程多次调用应复用同一 loop（保证 neo4j driver 连接不跨 loop）。"""
+        import asyncio
+
+        async def _get_loop_id():
+            return id(asyncio.get_running_loop())
+
+        loop_id_1 = _run_async(_get_loop_id(), timeout=10)
+        loop_id_2 = _run_async(_get_loop_id(), timeout=10)
+        assert loop_id_1 == loop_id_2

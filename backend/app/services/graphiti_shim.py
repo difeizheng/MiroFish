@@ -204,22 +204,51 @@ def create_graphiti_instance():
     return graphiti
 
 
+import asyncio
+import threading
+
+
+# 专用 graphiti 线程：所有 graphiti async 调用都在这个线程的 loop 上执行，
+# 保证 neo4j async driver 连给不跨 loop。其他线程通过 run_coroutine_threadsafe 提交。
+_GRAPHTI_THREAD = None
 _GRAPHTI_LOOP = None
+_GRAPHTI_LOCK = threading.Lock()
 
 
-def _run_async(coro):
-    """同步包装 async coroutine（创建独立 event loop，避免 driver 连接跨 loop 复用问题）。
-
-    neo4j async driver 连接绑定到首次使用的 event loop；graphiti 实例被 lru_cache 缓存后，
-    如果用 asyncio.run()（每次创建新 loop），第二次调用会报 "attached to a different loop"。
-    解决：用模块级单例 loop，所有 _run_async 调用共用同一个 loop。
-    """
-    import asyncio
-    global _GRAPHTI_LOOP
-    if _GRAPHTI_LOOP is None or _GRAPHTI_LOOP.is_closed():
+def _ensure_graphiti_loop():
+    """启动专用 graphiti 线程，返回 (thread, loop)。"""
+    global _GRAPHTI_THREAD, _GRAPHTI_LOOP
+    with _GRAPHTI_LOCK:
+        if _GRAPHTI_LOOP is not None and not _GRAPHTI_LOOP.is_closed():
+            return _GRAPHTI_THREAD, _GRAPHTI_LOOP
         _GRAPHTI_LOOP = asyncio.new_event_loop()
-    task = asyncio.ensure_future(coro, loop=_GRAPHTI_LOOP)
-    return _GRAPHTI_LOOP.run_until_complete(task)
+
+        def _run():
+            asyncio.set_event_loop(_GRAPHTI_LOOP)
+            _GRAPHTI_LOOP.run_forever()
+
+        _GRAPHTI_THREAD = threading.Thread(
+            target=_run, name="graphiti-async-loop", daemon=True
+        )
+        _GRAPHTI_THREAD.start()
+        return _GRAPHTI_THREAD, _GRAPHTI_LOOP
+
+
+def _run_async(coro, timeout=300):
+    """同步包装 async coroutine。
+
+    所有 graphiti async 调用通过专用线程的 event loop 执行，保证 neo4j async
+    driver 连接始终绑定到同一个 loop（避免 "attached to a different loop"）。
+    其他线程通过 run_coroutine_threadsafe 提交，不会报
+    "This event loop is already running"。
+
+    Args:
+        coro: coroutine 对象
+        timeout: 超时秒数（默认 300s）
+    """
+    _, loop = _ensure_graphiti_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
 
 
 # ============================================================
