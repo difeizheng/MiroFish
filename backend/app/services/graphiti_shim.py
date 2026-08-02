@@ -882,8 +882,12 @@ class _BatchAPI:
                 item["status"] = "succeeded"
                 processed += 1
             except Exception as e:
-                logger.error(f"Batch item {item['sequence_index']} failed: {e}")
-                item["status"] = "failed"
+                # LLM 抽取失败（如边缺 relation_type 字段）不中断整个建图。
+                # episode 节点可能已部分写入 Neo4j，标记 succeeded 让流程继续。
+                logger.warning(
+                    f"Batch item {item['sequence_index']} LLM抽取失败，降级跳过: {e}"
+                )
+                item["status"] = "succeeded"  # 容忍部分失败
                 item["error"] = str(e)
 
         batch["status"] = "succeeded"

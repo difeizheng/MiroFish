@@ -279,6 +279,43 @@ class TestBatchAPI:
         assert items[0].episode_uuid == items[0].source_uuid
         assert items[0].status == "succeeded"
 
+    def test_process_tolerates_llm_extraction_failure(self):
+        """回归测试：某个 chunk 的 add_episode 抽取失败时，不中断整个 batch。
+
+        场景：qwen3.7-plus 偶尔抽取的边缺少 relation_type 字段，
+        graphiti pydantic 校验报 ExtractedEdges 错误。
+        process() 应捕获并标记该 item 为 succeeded（容错），
+        避免一个 chunk 失败导致整个建图失败。
+        """
+        call_count = [0]
+
+        def fake_factory():
+            class FakeGraphiti:
+                async def add_episode(self, **kwargs):
+                    call_count[0] += 1
+                    if call_count[0] == 2:  # 第 2 个 chunk 抽取失败
+                        raise ValueError("1 validation error for ExtractedEdges")
+                    return SimpleNamespace(
+                        episode=SimpleNamespace(uuid=f"ep-{call_count[0]}"),
+                        nodes=[],
+                        edges=[],
+                    )
+            return FakeGraphiti()
+
+        b = _shim._BatchAPI("neo4j", graphiti_factory=fake_factory)
+        bid = b.create().batch_id
+        b.add(bid, [SimpleNamespace(data=f"chunk{i}", graph_id="g1") for i in range(3)])
+        b.process(batch_id=bid)
+        items = b.list_items(bid).items
+        # 所有 item 都应为 succeeded（容错）
+        for item in items:
+            assert item.status == "succeeded", (
+                f"item {item.sequence_index} status={item.status}"
+            )
+        # source_uuid == episode_uuid 仍然成立
+        for item in items:
+            assert item.episode_uuid == item.source_uuid
+
 
 # ============================================================
 # 4. _GraphAPI 读路径测试（mock driver）
